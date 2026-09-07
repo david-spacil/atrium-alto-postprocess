@@ -80,3 +80,31 @@ USER atrium
 
 ENTRYPOINT ["python", "run_pipeline.py"]
 CMD []
+
+
+# ---------------------------------------------------------------------------
+# API surface — published as :<version>-api (issue #55)
+#
+# Before this stage existed, alto-postprocess's FastAPI service was reachable only
+# through a docker-compose `entrypoint:` override on the BATCH image, so no runnable
+# API image was ever published and there was nothing for ARÚP/ARÚB to deploy on
+# Kubernetes. service/requirements.txt is already installed in `base` (see the pip
+# install above), so this stage only has to declare how to serve.
+#
+# Entrypoint is `python service/text_api.py` rather than a uvicorn CLI invocation:
+# this repo's app deliberately configures logging and reads HOST/PORT/RELOAD in its
+# own __main__ block (12-factor VII/XI), and that block is the documented production
+# start path. It calls uvicorn.run(..., timeout_graceful_shutdown=...) itself.
+# ---------------------------------------------------------------------------
+FROM base AS api
+
+EXPOSE 8000
+# STOPSIGNAL is the default (SIGTERM) — declared explicitly so a future edit cannot
+# change it silently; service/text_api.py's lifespan chains to uvicorn's own handler
+# for it via serve_lifecycle (service/atrium_service.py).
+STOPSIGNAL SIGTERM
+ENV PORT=8000 GRACEFUL_SHUTDOWN_S=20
+ENTRYPOINT ["python", "service/text_api.py"]
+CMD []
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+    CMD ["python", "/app/service/healthcheck.py"]

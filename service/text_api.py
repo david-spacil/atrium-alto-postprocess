@@ -3,6 +3,7 @@ service/text_api.py
 FastAPI wrapper for the ATRIUM text processing service.
 """
 
+import asyncio
 import json
 import os
 import shutil
@@ -37,11 +38,14 @@ if str(_current_dir) not in sys.path:
 # `atrium_service` is the shared ATRIUM meta-contract helper (§4), byte-identical
 # across every service and enforced by para-drift.reusable.yml.
 from atrium_service import (  # noqa: E402
+    ServiceState,
     add_cors,
     attach_health,
+    attach_inflight_middleware,
     build_info,
     read_tool_version,
     resolve_max_upload_mb,
+    serve_lifecycle,
 )
 from text_inference import text_manager  # noqa: E402
 
@@ -56,14 +60,30 @@ MAX_UPLOAD_MB = resolve_max_upload_mb(25)
 MAX_UPLOAD_BYTES = int(MAX_UPLOAD_MB * 1024 * 1024)
 
 
+#: Readiness/draining/in-flight state for the §4.6 disposability contract (issue #55).
+_state = ServiceState()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle context manager — loads models synchronously before traffic."""
+    """Lifecycle context manager — loads models before traffic, then drains on SIGTERM.
+
+    The RuntimeError below is deliberate and unchanged: a service that cannot load its
+    models should fail loudly rather than sit "not ready" forever. Under Kubernetes that
+    surfaces as a crash-loop on the startupProbe, which is the correct signal for a
+    misconfigured deployment — see docs/k8s_deployment.md's "Known limits" in the hub.
+    """
     try:
-        text_manager.load_models()
+        # Off the event loop (issue #55): load_models() pulls several torch models, and
+        # the loop should be free to answer the /ready probe a startupProbe is polling.
+        await asyncio.to_thread(text_manager.load_models)
     except Exception as exc:
         raise RuntimeError(f"Failed to initialise models on startup: {exc}") from exc
-    yield
+    _state.warm = True
+    # issue #55: composes with the model load above rather than replacing it. Flips
+    # /ready to 503 on SIGTERM and waits for in-flight processing before exit.
+    async with serve_lifecycle(_state):
+        yield
 
 
 app = FastAPI(
@@ -71,6 +91,7 @@ app = FastAPI(
     version=read_tool_version(Path(__file__).resolve().parent),
     lifespan=lifespan,
 )
+attach_inflight_middleware(app, _state)
 
 # CORS — standard §4.5 configuration; default "*" for parity with sibling services.
 add_cors(app, methods=["GET", "POST"])
@@ -83,7 +104,21 @@ def _deep_health() -> str | None:
     return None
 
 
-attach_health(app, deep_check=_deep_health)
+attach_health(app, deep_check=_deep_health, state=_state)
+
+
+def _refuse_if_draining() -> None:
+    """Reject NEW work once a shutdown signal has arrived (issue #55).
+
+    /ready has already flipped to 503 by this point, but a request accepted before the
+    orchestrator noticed can still reach a handler. Answering 503 here bounds the set of
+    requests the drain must wait for — and matters more than usual in this service,
+    whose handler writes a `delete=False` temp file that only its own `finally` removes:
+    a request killed mid-flight by a SIGKILL leaves that file behind.
+    """
+    if _state.draining:
+        raise HTTPException(status_code=503, detail="Service is shutting down; retry against a live replica.")
+
 
 # ---------------------------------------------------------------------------
 # Static frontend
@@ -322,6 +357,8 @@ async def process_document(
                 detail="Cannot auto-detect file type. Set task_type='alto', 'text', or 'json'.",
             )
 
+    _refuse_if_draining()
+
     # Initialize ParadataLogger with the required config argument and unified program name
     para_logger = ParadataLogger(config=PARA_CONFIG_PATH, program=PROGRAM_NAME)
 
@@ -333,13 +370,17 @@ async def process_document(
         if os.path.getsize(tmp_path) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_UPLOAD_MB} MB.")
 
-        # Execute text inference
+        # Execute text inference, off the event loop (issue #55). These are synchronous
+        # torch calls (LayoutReader + Qwen perplexity + fastText); run inline in an
+        # `async def` they blocked the ONLY event loop, so uvicorn's SIGTERM handler —
+        # an event-loop callback — could not run until the whole document finished, which
+        # made --timeout-graceful-shutdown meaningless here.
         if task_type == "alto":
-            result = text_manager.process_alto(tmp_path)
+            result = await asyncio.to_thread(text_manager.process_alto, tmp_path)
         elif task_type == "json":
-            result = text_manager.process_json(tmp_path)
+            result = await asyncio.to_thread(text_manager.process_json, tmp_path)
         else:
-            result = text_manager.process_text_file(tmp_path)
+            result = await asyncio.to_thread(text_manager.process_text_file, tmp_path)
 
         result["filename"] = file.filename
 
@@ -473,4 +514,10 @@ if __name__ == "__main__":
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),
         reload=os.getenv("RELOAD", "false").strip().lower() in ("true", "1", "yes", "on"),
+        # (12-factor IX, issue #55) Disposability: bound how long uvicorn waits for
+        # in-flight requests before closing their connections, so a SIGTERM leads to a
+        # prompt, predictable exit instead of an open-ended wait. serve_lifecycle()
+        # adds its own drain on top of this; docs/k8s_deployment.md in the hub carries
+        # the full budget these two have to fit inside.
+        timeout_graceful_shutdown=int(os.getenv("GRACEFUL_SHUTDOWN_S", "20")),
     )

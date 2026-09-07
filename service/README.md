@@ -135,7 +135,8 @@ are assigned by a fast CPU pre-filter before any model inference. The remaining 
 |--------|------------|-------------------------------------------------------------------------------------------------------------------------------------|
 | `GET`  | `/`        | Serves the standalone `index.html` interface for manual testing.                                                                    |
 | `GET`  | `/info`    | Service identity + capabilities: `service`, `version`, `endpoints`, `limits`, plus status, device, line fields, quality categories. |
-| `GET`  | `/health`  | Liveness probe; `?deep=true` also checks the quality/language models are loaded (503 on failure).                                   |
+| `GET`  | `/health`  | Liveness probe — 200 always, even mid-shutdown. `?deep=true` also checks the quality/language models are loaded (503 on failure or while draining).  |
+| `GET`  | `/ready`   | Readiness probe (issue #55) — 503 until model load finishes, 200 while serving, 503 the instant `SIGTERM` arrives. The Kubernetes `readinessProbe`/`startupProbe` target. |
 | `POST` | `/process` | Uploads a file for layout analysis, cleaning, and line-level classification.                                                        |
 
 ### Request Example 💻
@@ -386,6 +387,35 @@ successfully. Running this on consumer GPUs (like a 3090/4090) will likely resul
 wildly between architectures (≈ `3000.0` suits `distilgpt2`), so a value tuned for one model is mis-calibrated for the other.
 
 ---
+
+## Shutdown behavior 🛑
+
+Issue [#55](https://github.com/ufal/atrium-project/issues/55). The published `api` image
+(`ghcr.io/ufal/atrium-alto-postprocess:<version>-api`, new in that issue — before it this
+service was only reachable via a compose entrypoint override, so no API image existed to
+deploy) declares `HEALTHCHECK` (shallow `GET /health`, via the vendored
+`service/healthcheck.py`) and `STOPSIGNAL SIGTERM`. `service/text_api.py`'s own
+`__main__` block — which is this repo's production start path — passes
+`timeout_graceful_shutdown` (`GRACEFUL_SHUTDOWN_S`, default 20s).
+
+On `SIGTERM` the service flips `GET /ready` to **503** at once so an orchestrator stops
+routing to it, answers new `/process` calls with 503, and lets in-flight processing finish
+before exiting. `GET /health` deliberately stays 200 throughout — a liveness probe failing
+mid-shutdown would get the container killed before the drain completed.
+
+Inference now runs in a worker thread (`asyncio.to_thread`) rather than inline on the
+event loop. That was a prerequisite, not a tidy-up: uvicorn's `SIGTERM` handler is an
+event-loop callback, so while a synchronous `process_alto()` held the loop the signal
+could not be processed at all. Draining also matters here specifically because `/process`
+writes a `delete=False` temp file that only its own `finally` clause removes — a request
+killed by `SIGKILL` mid-flight leaves that file behind.
+
+⚠️ Model load failure at startup deliberately raises, so a misconfigured deployment
+crash-loops on the startup probe rather than sitting "not ready" forever. That is intended
+— see `docs/k8s_deployment.md` ("Known limits") in the hub.
+
+A clean shutdown exits **143** (128 + SIGTERM), not 0: uvicorn re-raises the captured
+signal on purpose so a supervisor sees the real cause. That is a normal stop, not a crash.
 
 ## Contacts 📧
 
