@@ -1,5 +1,5 @@
 # 📓 atrium-alto-postprocess — agent_dev_logs/DEVLOG.md (timeline index)
-> _OCR/ALTO post-processing + line categorization. 5 open issues (#2–#6). `test` HEAD `6882857` (2026-07-12) · **v0.20.2**._
+> _OCR/ALTO post-processing + line categorization. 7 open issues (#2, #3, #4, #23, #30, #31, #37); #5/#6 closed. `test`==`master` HEAD `cb235b5` (2026-09-07) · **v1.4.6-beta**._
 > _Per-issue detail: `digests/{id}.digest.md` · `plans/{id}.plan.md` · `issues/` exports (source of truth). Cross-repo/hub history lives in `ufal/atrium-project/agent_dev_logs/DEVLOG.md` (deduplicated out of this file)._
 
 ## 2026-03-13
@@ -225,3 +225,112 @@ While Issue #31 generalized the plain text producing path, the downstream contra
 to be structured inside a shared `doc.json`. Outstanding issues include misstated code status in planning documents,
 the absence of real OCR-engine sample data (only synthetic JSON exists), a missing `--force-single-page` function, and
 a lack of end-to-end subprocess tests for the `--method json-keys` approach.
+
+## 2026-07-28 – 2026-07-31 (partly reconstructed)
+
+* Releases **v1.4.0-beta** (07-28, folding in @david-spacil's PR #32 categorization-logic contribution — the repo's
+first outside-core-team PR) through **v1.4.1-beta** (07-31, GHA/`@v1` pin work) are tagged, but the commits under
+those tags (`b25a175`…`9804c58`, including `e658586` "update GHA with ref to v1" and the Opus-authored
+`docker`/`check_version.py` GHA overhaul also landing hub-side this same window) are **no longer reachable from
+`test`/`master`** — a dangling-tag artifact of the same class #30's digest later documents explicitly ("lost with
+that session's container"). The substance survived even though the commit chain didn't: `test` picks back up cleanly
+at `86a35a0` (07-31) already carrying the completed GHA state (`docker-tool.reusable.yml@v1` present from this
+commit on), and `atrium_document.py`/`atrium_document.schema.json` gain `doc_id`-aware handling as the shared JSON
+contract keeps expanding ahead of any per-repo consumption logic.
+
+## 2026-08-01
+
+* **#37** — Pipeline invocation and dependencies updated for the upcoming JSON-2-TXT/`atrium_document` integration
+(`4b70916`, `a6964b5`); issue logs refreshed. Released **v1.4.2-beta**.
+
+## 2026-08-02
+
+* **#37 JSON-2-TXT breaks downstream architectural contract** — Opened by K4TEL: the draft JSON-2-TXT extractor
+from v1.2.1-beta (#31) predates the `atrium_document.schema.json` accretion model the ecosystem converged on around
+07-31; must be refactored to ingest/mutate a shared `doc.json` rather than emit isolated plain text, and must add the
+still-missing `--force-single-page` flag.
+* **#37** — Implemented same day. Audited `test` HEAD before writing any code and found most of the "contract
+migration" had already happened via #13's earlier `atrium_document.py`/`document_hook.py` work (Extraction/Accretion
+split, field-ownership boundaries, `main()` already calling `write_document_block()`); the real gap was narrower.
+Shipped `--force-single-page` as a tri-state CLI flag falling back to a `[EXTRACT].FORCE_SINGLE_PAGE_JSON` config key
+(needed because `run_pipeline.py` invokes the script as a bare subprocess with no extra args); added
+`tests/test_json_subprocess.py`, shelling out via `subprocess.run` for success, the flag, the config fallback,
+malformed args, a missing input CSV, and partial/total corrupted-JSON failure; documented the previously-uncovered
+`json-keys` extraction method in `README.md` (the only one of four methods without its own subsection). Pushed to
+`test`; awaiting review and independent confirmation that `atrium-llm-enrich` can consume the output without an
+adapter (no checkout of that repo was available in-session to verify directly).
+
+## 2026-08-03 – 2026-08-06
+
+* Hub template (`atrium_document.py` / `atrium_document.schema.json`) iterated three more times on `test`
+(`01decdc`, `617a3fa`, `ea6f0b3` — the last alone adds 487 lines) as the shared JSON contract kept growing underneath
+#37's already-landed implementation.
+* **#37** — A further LLM-review round ("edits for LLM review+fix round by Opus", `f83a27a`) touched `page_split.py`,
+`document_hook.py`, `json_stats_create.py`, `run_pipeline.py`, `alto_stats_create.py` and `README.md` on top of the
+08-02 implementation; `ruff.toml` hardened (`07dcc9f`); two more `atrium_document.py` fix passes (`032fb43`) and a
+version bump (`9b24fd0`) shipped as **v1.4.3-beta**.
+
+## 2026-08-19
+
+* GHA hardening: `release.yml`/`scheduled-smoke.yml` timeout/guard fixes (`aa8bc35`); a further Opus-reviewed round
+adding `.coveragerc` exclusions, a repo `dependabot.yml`, and CodeQL/security workflow permission fixes (`6b23af0`);
+one more `atrium_document.py` alignment pass with a new `tests/test_document_originators.py` (`2c81f9c`). Released
+**v1.4.4-beta**.
+
+## 2026-08-24
+
+* **#30 (reopened)** — @david-spacil reopens after consulting @DanaKriv over the 07-29 batch: a class of lines she
+flagged traces back to the same root cause the issue was originally closed on, concentrated in the 2000+-year
+documents #30 is about.
+
+## 2026-09-03
+
+* **#30** — K4TEL and @david-spacil resume the calibration thread. Repo-side, `061bc70` unifies three previously-
+diverged scoring code paths — the API service (`service/text_inference.py`), the standalone
+`tools/recategorize_from_csv.py`, and the first-run pipeline (`classify_TEXT.py`) — into one algorithm; `24acaab`
+aligns `docs/categorization_logic.md`/README/CONTRIBUTING; `25bc186` adds `tests/test_scoring_single_source.py`
+(348 lines) to lock the three paths together going forward. Version bumped to **v1.4.5-beta**.
+
+## 2026-09-04
+
+* **#30** — Further back-and-forth with @david-spacil. `8fadeb9` ships short-line refinements ahead of the fuller
+patch: `rule_domain_notation`, a narrow shape-based predicate for grid references, counts and abbreviation chains
+(deliberately scoped to notation, not vocabulary), plus `apply_page_perplexity_blend()` groundwork.
+
+## 2026-09-05
+
+* **#30** — K4TEL responds in detail (09:00): `rule_domain_notation` now also exempts `rule_extreme_ppl`/
+`rule_absolute_ppl` (perplexity-only convictions, agreed inverted on this population) but deliberately **not**
+`rule_hard_sweep` — it needs `orig_lang_score < 0.45` as an independent second witness, since shape alone can't
+separate capitalised dot-chains from real abbreviations (>50% false-accept either way on measurement).
+`Bokalisace: B-XII-c` fixed via a closed label lexicon. `apply_page_perplexity_blend()`'s inert re-capping bug is
+fixed (`apply_short_cap=False`) — it was re-scoring through `score_line()`, which re-applied `SHORT_PPL_CAP` and
+pinned the blended value back to 850 before any rule ever saw it, so the blend could never actually move a category.
+`fec8537`/`d823522` land the fix plus `tests/test_page_perplexity_blend.py`; `19433cb` cleans up configs/service/
+requirements. New digest + plan committed for #30 (`cdcdf57`, `f698b7e`).
+
+## 2026-09-06
+
+* GHA: scheduled-smoke workflow timing fix (`94cf2f1`).
+
+## 2026-09-07
+
+* Confirmed live: all five GHA workflows now reference the hub's tagged **`@v1`** release rather than the mutable
+`@test` ref (`docker-tool.reusable.yml@v1` on the current `Docker Build & Publish` run) — this closes the standing
+cross-repo N8 finding from the hub's `project_state_3007.md` (07-30), which had found 45 live `@test` references
+across the ecosystem including this repo's.
+* `f4195c6` pins `service/requirements.txt` to the same version constraints as `setup/requirements.txt` — torch,
+transformers, fasttext, numpy, lxml, fastapi, uvicorn and python-multipart were previously **unpinned** in the
+service file, so an API-only install could resolve a different version than the batch pipeline for the same
+package. A live instance of the "12-factor II" pinning gap the hub's cross-repo audit flagged elsewhere.
+* Released **v1.4.6-beta**; dependabot batch-bumped scikit-learn/scipy/lxml/httpx2/bitsandbytes/fastapi/
+python-multipart/matplotlib (#47); CI green on both `test` and `master`.
+* **State**: 7 open issues (#2, #3, #4, #23, #30, #31, #37); #5 and #6 closed 2026-07-21/07-25. `test` and `master`
+are identical at `cb235b5`. The two active threads are #30 (reopened, blocked on three questions to @david-spacil
+before his PR can open — see `digests/30.digest.md`) and #37 (implementation shipped, blocked on independent
+cross-repo confirmation from `atrium-llm-enrich`).
+
+---
+_Timeline index refreshed 2026-09-07 against live `test`/`master` HEAD, the current release list, open-issue state
+via the GitHub API, and the refreshed `30.digest.md`/`37.digest.md`. Nothing removed from the issues themselves
+(per hub #29); this file is a derived reading aid in `agent_dev_logs/`._
