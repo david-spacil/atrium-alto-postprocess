@@ -3,9 +3,9 @@
 # importorskips them, running only where the full stack exists.
 pytest>=9.1.1
 pytest-cov
-fastapi
+fastapi>=0.120,<1.0
 httpx
-python-multipart
+python-multipart>=0.0.20
 openapi-spec-validator
 # (#37) atrium_document.schema.json conformance check for the json-keys
 # extractor's doc.json accretion output.
