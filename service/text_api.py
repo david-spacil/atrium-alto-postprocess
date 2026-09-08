@@ -18,20 +18,31 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from atrium_document import canonical_doc_id
-from atrium_paradata import ParadataLogger
-from document_hook import PROGRAM_NAME, quality_band, write_document_block
-
-# Add this file's own directory (service/) to sys.path BEFORE importing the
-# sibling `text_inference` module, so the bare import resolves in every launch
-# context: `python service/text_api.py` (the Docker entrypoint), `uvicorn
-# service.text_api:app`, and pytest importing this module as `service.text_api`
-# from the repo root. This bootstrap MUST run before the import below; the E402
-# suppression on that import keeps Ruff's import sorter (I001) from hoisting it
-# back above this code and re-breaking it (regression tracked in atrium-project#18).
+# Put BOTH the repo root and this file's own directory on sys.path BEFORE any
+# first-party import, so every launch context resolves:
+#
+#   * `python service/text_api.py`   -- the Dockerfile `api` stage ENTRYPOINT (#55)
+#     and the documented production start path. Python sets sys.path[0] to the
+#     SCRIPT's directory (service/), so the repo root is ABSENT here.
+#   * `uvicorn service.text_api:app` -- CWD is the repo root, service/ is absent.
+#   * pytest importing this module as `service.text_api` from the repo root.
+#
+# The repo-root half is what makes `atrium_document` / `atrium_paradata` /
+# `document_hook` below resolve; the service/ half is what makes the bare sibling
+# imports (`atrium_service`, `text_inference`, `utils`) resolve. Only the first
+# launch context lacks the repo root, and it is the one nothing exercised until the
+# `api` image was first started -- `docker-build-smoke` is gated to pull_request
+# events, so no push to `test` ever ran it, and the image died at import with
+# `ModuleNotFoundError: No module named 'atrium_document'`.
+#
+# This bootstrap MUST stay above every import below it; the E402 suppressions keep
+# Ruff's import sorter (I001) from hoisting them back over it and re-breaking this
+# (the sibling-import form of the same regression is tracked in atrium-project#18).
 _current_dir = Path(__file__).resolve().parent
-if str(_current_dir) not in sys.path:
-    sys.path.insert(0, str(_current_dir))
+_repo_root = _current_dir.parent
+for _bootstrap_path in (_repo_root, _current_dir):
+    if str(_bootstrap_path) not in sys.path:
+        sys.path.insert(0, str(_bootstrap_path))
 
 # Both imports below are bare (service/ is on sys.path from the bootstrap above) and
 # carry noqa: E402 so Ruff's import sorter does not hoist them above that bootstrap.
@@ -54,6 +65,15 @@ from text_inference import text_manager  # noqa: E402
 # `python service/text_api.py` (the Docker entrypoint) as well as under
 # `uvicorn service.text_api:app`.
 from utils import parse_alto_page_labels  # noqa: E402
+
+# These three live at the REPO ROOT, not in service/, so they resolve only because the
+# bootstrap above put the repo root on sys.path. They used to sit above it and worked
+# everywhere except the one launch context that matters in production
+# (`python service/text_api.py`, the `api` stage ENTRYPOINT), where the image died at
+# import. Keep them below the bootstrap; `tests/test_service_entrypoint.py` enforces it.
+from atrium_document import canonical_doc_id  # noqa: E402
+from atrium_paradata import ParadataLogger  # noqa: E402
+from document_hook import PROGRAM_NAME, quality_band, write_document_block  # noqa: E402
 
 # Canonical upload limit (§4.5): MAX_UPLOAD_MB, with a MAX_UPLOAD_BYTES fallback.
 MAX_UPLOAD_MB = resolve_max_upload_mb(25)
