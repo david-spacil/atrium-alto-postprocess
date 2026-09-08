@@ -13,6 +13,13 @@ Categories Outputted:
   - Trash     : Severe OCR corruption, high symbol density, gibberish, or failed language ID.
   - Noisy     : Partially degraded text (e.g., isolated strange symbols, mid-word uppercase).
   - Clear     : Structurally sound text with low perplexity.
+
+Those five, and only those five, are what this module writes into `lines[].categ`.
+They are bound to the CATEG_* label constants below (collected in
+CATEGORIES_EMITTED) and cross-checked at import time against the hub registry,
+atrium_vocab.LINE_CATEGORY_ORIGINATORS["alto-postprocess"]. The same block's other
+authorised originator, digital-convert, emits a DISJOINT set ({Garbage, Inverted});
+that is deliberate and is not drift to reconcile.
 """
 
 import configparser
@@ -23,6 +30,67 @@ import sys
 import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Line-category labels  (hub registry: atrium_vocab.LINE_CATEGORY_ORIGINATORS)
+# ---------------------------------------------------------------------------
+# The five strings below are the ONLY values this module ever writes into
+# `lines[].categ`. They are spelled out here as literals, not derived from the
+# registry, and that direction is deliberate:
+#
+#   * these strings ARE the emitted contract. Deriving them would make a stale or
+#     re-ordered vendored copy of atrium_vocab.py silently change what the
+#     pipeline outputs -- the registry is a description of behaviour, not a knob
+#     that steers it;
+#   * `lines[].categ` has a SECOND authorised originator (`digital-convert`, in
+#     atrium-llm-enrich) which emits {Garbage, Inverted}. The two sets are
+#     disjoint ON PURPOSE -- one is an OCR verdict over a rendered image, the
+#     other a decode-sanity verdict over an embedded text layer -- so "align the
+#     two" is never the fix for a disagreement found here.
+#
+# The registry's role is therefore advisory only: the check below reports a drift
+# between this file and the hub declaration and then gets out of the way. See
+# defect V-1 in the hub's docs/skos_strategy.md for why a consumer that filters
+# this field must handle BOTH sets.
+#
+# Naming note: the CATEG_*_SCORE_MAX / CATEG_GARBAGE_DENSITY_HIGH constants further
+# down are quality-score THRESHOLDS, not labels. Same prefix, different kind. And
+# "Process", which pre_filter_line() also returns, is NOT one of these: it is the
+# routing sentinel meaning "no verdict yet, score this line" (classify_TEXT.py gates
+# on `cat != "Process"`), and it never reaches lines[].categ.
+CATEG_EMPTY = "Empty"
+CATEG_NON_TEXT = "Non-text"
+CATEG_TRASH = "Trash"
+CATEG_NOISY = "Noisy"
+CATEG_CLEAR = "Clear"
+
+#: Every value `determine_category()` / `categorize_line()` can return, sorted so a
+#: comparison against the registry is order-independent. Consumers that need the
+#: set (service/text_api.py's `lines[]` projection documents it) should read this
+#: rather than re-typing the strings.
+CATEGORIES_EMITTED: tuple = tuple(sorted((CATEG_CLEAR, CATEG_EMPTY, CATEG_NOISY, CATEG_NON_TEXT, CATEG_TRASH)))
+
+# Advisory consistency check, NOT a gate. atrium_vocab is a vendored hub-canonical
+# file and is legitimately absent in some execution contexts (a bare `text_util.py`
+# copied next to a notebook, an image built before the vendor step). A missing
+# registry must never break the pipeline, so this follows the house idiom used by
+# atrium_document.py's origin check: abstain with a NOTE on stderr, never fatal.
+# Silence here means agreement; nothing is printed on the happy path.
+try:
+    from atrium_vocab import LINE_CATEGORY_ORIGINATORS as _VOCAB_LINE_CATEGORY_ORIGINATORS
+except ImportError:  # registry not vendored here - abstain, do not guess
+    _VOCAB_LINE_CATEGORY_ORIGINATORS = None
+else:
+    _declared = tuple(sorted(_VOCAB_LINE_CATEGORY_ORIGINATORS.get("alto-postprocess", ())))
+    if _declared and _declared != CATEGORIES_EMITTED:
+        print(
+            "[text_util] NOTE - line-category drift: this module emits "
+            f"{list(CATEGORIES_EMITTED)} but atrium_vocab declares {list(_declared)} for "
+            "originator 'alto-postprocess'. Emission is unchanged; reconcile the registry "
+            "or this file (see defect V-1 in the hub's docs/skos_strategy.md).",
+            file=sys.stderr,
+        )
+    del _declared
 
 # ---------------------------------------------------------------------------
 # Ablation Kill-Switch (Part B)
@@ -1554,12 +1622,18 @@ def categorize_line(
         ghost_dominated,
     )
 
-    if categ == "Trash":
+    # Label constants, not literals, on the three sites where a category name is
+    # COMPARED against rather than emitted: the pairing of CATEG_TRASH with
+    # CATEG_TRASH_SCORE_MAX is the whole point of this block, and spelling both
+    # halves the same way keeps that visible. The `return` sites in
+    # determine_category() are deliberately left as literals - see the note at the
+    # head of this file.
+    if categ == CATEG_TRASH:
         aligned_score = min(qs, CATEG_TRASH_SCORE_MAX - 0.0001)
-    elif categ == "Noisy":
+    elif categ == CATEG_NOISY:
         aligned_score = max(qs, CATEG_TRASH_SCORE_MAX)
         aligned_score = min(aligned_score, CATEG_NOISY_SCORE_MAX - 0.0001)
-    elif categ == "Clear":
+    elif categ == CATEG_CLEAR:
         aligned_score = max(qs, CATEG_NOISY_SCORE_MAX)
     else:
         aligned_score = qs
