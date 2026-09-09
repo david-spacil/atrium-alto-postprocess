@@ -135,6 +135,14 @@ def test_sobol_reports_zero_variance_instead_of_raising(mock_sweep_env):
     `run_sobol_backend` now guards it, using the same `importance_skipped`
     convention `run_optuna_backend` already uses for its own zero-variance case.
     """
+    # SALib is a sweep extra (setup/requirements-sweep.txt), NOT installed by the
+    # CI fast lane, which installs requirements.txt + service + requirements-test
+    # only. Without this guard `run_sobol_backend` raises
+    # "The sobol backend requires SALib." and the job fails on a missing optional
+    # dependency rather than on the behaviour under test -- every other backend
+    # test in this module carries the same skip for the same reason.
+    pytest.importorskip("SALib")
+
     mock_sweep_env["params"].append("LOWPPL_CLEAR_MAX")
     mock_sweep_env["base_constants"]["LOWPPL_CLEAR_MAX"] = 60.0
 
