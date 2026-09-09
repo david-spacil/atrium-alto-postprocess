@@ -6,14 +6,30 @@
 #
 # pandas/numpy already come from requirements.txt.
 #
-# (12-factor II) NOTE: the scikit-learn and matplotlib ranges below were narrowed
-# in 8fadeb9 from `scikit-learn>=1.9.0` / `matplotlib>=3.11.1` to the capped
-# ranges here. The new ranges are DISJOINT from the old ones — they exclude every
-# version the previous constraint required — so a sweep run before and after that
-# commit uses different libraries. The ceilings are kept because they reflect a
-# real interpreter constraint somewhere, but the reason should be recorded here
-# rather than inferred; if it is only a local Python version, this belongs in
-# that environment, not in the repo's dependency set.
+# (12-factor II) THE FLOORS BELOW ARE A PYTHON VERSION BOUNDARY, measured rather
+# than inferred. An earlier revision of this file recorded that the ranges were
+# narrowed in 8fadeb9 and that "the ceilings are kept because they reflect a real
+# interpreter constraint somewhere, but the reason should be recorded here rather
+# than inferred". This is that reason:
+#
+#   * scikit-learn 1.8.0 and 1.9.0 are published for Python >= 3.11 ONLY. On
+#     Python 3.10 the newest installable release is 1.7.2, so `>=1.9.0` resolves
+#     to nothing and pip fails with "No matching distribution found".
+#   * matplotlib 3.11.x is likewise >= 3.11 only; Python 3.10 caps at 3.10.9.
+#
+# So these are not arbitrary ceilings — they pin the sweep to the SAME
+# interpreter the rest of the repo already standardises on: .github/workflows
+# runs `python-version: "3.11"`, the Dockerfile builds `FROM python:3.11-slim`,
+# and setup/requirements-test.txt requires `pandas>=3.0.5`, which is also
+# Python >= 3.11 only. A venv on 3.10 cannot install this repo's test
+# dependencies either, so the sweep is not the odd one out.
+#
+# If you are on Python 3.10 and cannot upgrade, the sweep code itself is
+# compatible with much older releases — it uses only RandomForestRegressor,
+# permutation_importance and pyplot — so `scikit-learn>=1.4,<1.8` and
+# `matplotlib>=3.8,<3.11` will run it. Do that in your environment, not here:
+# a sweep tunes production constants, and running it against a different library
+# set than production is exactly the divergence this note exists to prevent.
 scikit-learn>=1.9.0,<1.10      # RandomForest surrogate + permutation importance (sklearn backend)
 optuna>=4.9.0            # TPE/random search + fANOVA importance (optuna backend)
 matplotlib>=3.11.1,<3.12   # optional: param_importance.png bar charts

@@ -629,10 +629,41 @@ def run_sobol_backend(
             }
         )
 
-    Si = sobol_analyze.analyze(problem, Y, calc_second_order=False, print_to_console=False)
-
-    st_importance = normalize_importances({name: float(v) for name, v in zip(free_params, Si["ST"], strict=True)})
-    s1_importance = normalize_importances({name: float(v) for name, v in zip(free_params, Si["S1"], strict=True)})
+    # A constant objective makes every Sobol index undefined -- both estimators
+    # divide by the output variance. SALib signals that by returning
+    # `np.array([0.0])` from first_order()/total_order() instead of a scalar,
+    # which numpy >= 2 then refuses to assign into the scalar slot `S["S1"][j]`:
+    #
+    #   ValueError: setting an array element with a sequence
+    #   (from TypeError: only 0-dimensional arrays can be converted ...)
+    #
+    # So a DEGENERATE OBJECTIVE surfaces as a dtype error two frames inside
+    # SALib, naming neither the metric nor the cause. It is not hypothetical: it
+    # is what `tools/run_optim_pipeline.sh` does by default, because
+    # data_samples/DOC_LINE_CATEG is 15 lines and most constants cannot move a
+    # category on it. Under numpy < 2 the same run only emitted a warning --
+    # which is why tests/test_sweep_backends.py suppresses warnings on
+    # "zero-variance mock data" -- so this became an error when numpy 2 landed,
+    # and setup/requirements.txt pins numpy >= 2.4.6.
+    #
+    # Guard it here, where the cause is legible, using the same
+    # `importance_skipped` convention the optuna backend already uses for its
+    # own zero-variance case.
+    result_extra: dict[str, Any] = {}
+    if float(np.ptp(Y)) == 0.0:
+        print(
+            f"[sobol] WARNING: objective '{metric}' is constant across all {len(Y)} samples — "
+            "Sobol indices are undefined. Reporting zero importance. "
+            "A larger or more varied input corpus is what makes this measurable."
+        )
+        zero = {name: 0.0 for name in free_params}
+        st_importance = normalize_importances(zero)
+        s1_importance = normalize_importances(dict(zero))
+        result_extra["importance_skipped"] = "zero variance"
+    else:
+        Si = sobol_analyze.analyze(problem, Y, calc_second_order=False, print_to_console=False)
+        st_importance = normalize_importances({name: float(v) for name, v in zip(free_params, Si["ST"], strict=True)})
+        s1_importance = normalize_importances({name: float(v) for name, v in zip(free_params, Si["S1"], strict=True)})
 
     save_json(output_dir / "param_importance.json", st_importance)
     save_json(output_dir / "S1_importance.json", s1_importance)
@@ -647,6 +678,7 @@ def run_sobol_backend(
         "n_params": len(free_params),
         "sobol_ST": st_importance,
         "sobol_S1": s1_importance,
+        **result_extra,
     }
 
 

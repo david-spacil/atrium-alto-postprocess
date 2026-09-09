@@ -1,4 +1,8 @@
 pyarrow>=25.0.1
+# scikit-learn 1.8+ is published for Python >= 3.11 ONLY (3.10 caps at 1.7.2),
+# so this floor is the same interpreter boundary documented at length in
+# setup/requirements-sweep.txt. The repo standardises on 3.11 (CI, Dockerfile,
+# and pandas>=3.0.5 in requirements-test.txt all require it).
 scikit-learn>=1.9.0
 scipy>=1.18.1
 httpx>=0.28.1

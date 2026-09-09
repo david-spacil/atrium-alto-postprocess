@@ -114,3 +114,35 @@ def test_sobol_backend(mock_sweep_env):
     assert res["backend"] == "sobol"
     assert "sobol_ST" in res
     assert "sobol_S1" in res
+
+
+def test_sobol_reports_zero_variance_instead_of_raising(mock_sweep_env):
+    """A constant objective must be reported, not crash inside SALib.
+
+    On this mock data no constant can move a category, so the objective is
+    constant and every Sobol index is undefined. SALib signals that by
+    returning `np.array([0.0])` from its estimators rather than a scalar, and
+    numpy >= 2 refuses to assign that into `S["S1"][j]`:
+
+        ValueError: setting an array element with a sequence
+
+    Under numpy < 2 the same run only warned, which is why the test above
+    suppresses warnings on zero-variance data — so this turned into a hard
+    failure when `setup/requirements.txt` moved to `numpy>=2.4.6`, and it is
+    reachable straight from `tools/run_optim_pipeline.sh`, whose default input
+    is the 15-line `data_samples/DOC_LINE_CATEG`.
+
+    `run_sobol_backend` now guards it, using the same `importance_skipped`
+    convention `run_optuna_backend` already uses for its own zero-variance case.
+    """
+    mock_sweep_env["params"].append("LOWPPL_CLEAR_MAX")
+    mock_sweep_env["base_constants"]["LOWPPL_CLEAR_MAX"] = 60.0
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        warnings.simplefilter("ignore", category=UserWarning)
+        res = run_sobol_backend(**mock_sweep_env)
+
+    assert res["importance_skipped"] == "zero variance"
+    assert set(res["sobol_ST"].values()) == {0.0}, "an undefined index must not be reported as importance"
+    assert set(res["sobol_S1"].values()) == {0.0}

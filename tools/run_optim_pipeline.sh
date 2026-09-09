@@ -22,9 +22,64 @@ echo " ML Trials    : $TRIALS (RF/Optuna)"
 echo " Sobol N      : $SOBOL_N"
 echo "------------------------------------------------------------"
 
+# --- Interpreter guard ------------------------------------------------------
+# setup/requirements-sweep.txt floors scikit-learn at 1.9 and matplotlib at
+# 3.11.1, and BOTH are published for Python >= 3.11 only. On Python 3.10 pip
+# cannot resolve them and aborts this whole script (`set -e`) with a wall of
+# candidate versions that never mentions the interpreter -- which is the actual
+# cause. Check it here so the message names the problem.
+#
+# This is not a sweep-specific requirement: CI runs 3.11, the Dockerfile is
+# python:3.11-slim, and setup/requirements-test.txt needs pandas>=3.0.5, which
+# is also 3.11+. A 3.10 venv cannot install this repo's test dependencies either.
+PY_BIN="${PYTHON:-python}"
+REQUIRED_MINOR=11
+read -r PY_MAJOR PY_MINOR PY_FULL <<< "$("$PY_BIN" -c 'import sys; print(sys.version_info[0], sys.version_info[1], sys.version.split()[0])')"
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt "$REQUIRED_MINOR" ]; }; then
+    {
+        echo ""
+        echo "ERROR: the sweep needs Python >= 3.${REQUIRED_MINOR}; this interpreter is ${PY_FULL}."
+        echo "       ($PY_BIN -> $("$PY_BIN" -c 'import sys; print(sys.executable)'))"
+        echo ""
+        echo "  Cause: scikit-learn >= 1.8 and matplotlib >= 3.11 ship no Python 3.10"
+        echo "         wheels, so 'scikit-learn>=1.9.0,<1.10' resolves to nothing."
+        echo ""
+        echo "  Fix:   recreate the venv on 3.11, which is what CI and the Docker"
+        echo "         image already use:"
+        echo ""
+        echo "           python3.11 -m venv venv-alto && . venv-alto/bin/activate"
+        echo "           pip install -r setup/requirements.txt -r setup/requirements-sweep.txt"
+        echo ""
+        echo "  If you must stay on 3.10, the sweep CODE is compatible with older"
+        echo "  releases (it uses only RandomForestRegressor, permutation_importance"
+        echo "  and pyplot). Install them yourself and re-run with SKIP_DEP_INSTALL=1:"
+        echo ""
+        echo "           pip install 'scikit-learn>=1.4,<1.8' 'matplotlib>=3.8,<3.11' optuna SALib"
+        echo "           SKIP_DEP_INSTALL=1 $0 $*"
+        echo ""
+        echo "  Note that this tunes production constants against a different library"
+        echo "  set than production runs on. See setup/requirements-sweep.txt."
+        echo ""
+    } >&2
+    exit 1
+fi
+
 # Ensure we have the required dependencies
-echo ">> Checking/Installing dependencies..."
-pip install -r setup/requirements-sweep.txt -q
+if [ -n "${SKIP_DEP_INSTALL:-}" ]; then
+    echo ">> Skipping dependency install (SKIP_DEP_INSTALL set)."
+else
+    echo ">> Checking/Installing dependencies..."
+    if ! pip install -r setup/requirements-sweep.txt -q; then
+        {
+            echo ""
+            echo "ERROR: could not install setup/requirements-sweep.txt on Python ${PY_FULL}."
+            echo "       Re-run with SKIP_DEP_INSTALL=1 once the four packages are present,"
+            echo "       or see the compatibility note in setup/requirements-sweep.txt."
+            echo ""
+        } >&2
+        exit 1
+    fi
+fi
 
 mkdir -p "$OUT_BASE"
 
