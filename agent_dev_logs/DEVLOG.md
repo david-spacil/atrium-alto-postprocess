@@ -1,5 +1,5 @@
 # 📓 atrium-alto-postprocess — agent_dev_logs/DEVLOG.md (timeline index)
-> _OCR/ALTO post-processing + line categorization. 7 open issues (#2, #3, #4, #23, #30, #31, #37); #5/#6 closed. `test`==`master` HEAD `cb235b5` (2026-09-07) · **v1.4.6-beta**._
+> _OCR/ALTO post-processing + line categorization. 7 open issues (#2, #3, #4, #23, #30, #31, #37); #5/#6 closed. `test` HEAD `4017a76` (2026-09-09), `master` `ebaec0a` (4 behind) · **v1.4.6-beta** released; next tag needs the version bump in `CITATION.cff` + `setup/para_config.txt`._
 > _Per-issue detail: `digests/{id}.digest.md` · `plans/{id}.plan.md` · `issues/` exports (source of truth). Cross-repo/hub history lives in `ufal/atrium-project/agent_dev_logs/DEVLOG.md` (deduplicated out of this file)._
 
 ## 2026-03-13
@@ -330,7 +330,85 @@ are identical at `cb235b5`. The two active threads are #30 (reopened, blocked on
 before his PR can open — see `digests/30.digest.md`) and #37 (implementation shipped, blocked on independent
 cross-repo confirmation from `atrium-llm-enrich`).
 
+## 2026-09-08
+
+* `1bd64d8` gives the service a deployable surface: a new **`api` Dockerfile stage**
+(`EXPOSE 8000`, explicit `STOPSIGNAL SIGTERM`, `HEALTHCHECK` → `service/healthcheck.py`,
+`ENTRYPOINT ["python", "service/text_api.py"]`), plus `ServiceState`, an in-flight middleware and
+`serve_lifecycle` with a `/ready` endpoint in `service/atrium_service.py` (+246), and five `/ready`/drain
+tests. Before this, the FastAPI app was reachable only via a docker-compose `entrypoint:` override on the
+batch image, so no runnable API image was ever published for ARÚP/ARÚB to deploy.
+* That stage shipped on a **push**, and `docker-build-smoke` is gated `if: github.event_name ==
+'pull_request'` in the hub reusable — so nothing ever started the image. The first fork PR did, and it died
+at import: `ModuleNotFoundError: No module named 'atrium_document'`. Launching a *script* puts
+`/app/service` on `sys.path[0]` and leaves `/app` absent. `4139e93` adds the bootstrap above the
+first-party imports and pins it two ways in `tests/test_service_entrypoint.py` — a `slow` subprocess test
+reproducing the container's `sys.path`, and a cheap source-order guard, because ruff's import sorter is
+what would undo it. **The probe still does not run on pushes**, so the fix is verified by unit test rather
+than by a container start.
+* `fdf35b1` + `d774ba3` land the SKOS controlled-label registry (`atrium_vocab.py`, +1,152, hub issue #51)
+and keep `tests/test_atrium_vocab.py` out of ruff's reach — it is one of the eleven hub-canonical files
+`para-drift` compares with `diff -u`, so a local reformat would break drift.
+* Dependabot: `cb235b5` (setup-deps ×8, #47) and `2b7a400` (service-deps ×4, #49).
+
+## 2026-09-09
+
+* **Issue #30 — the blocking claim was falsified, in part.** Three rounds had concluded that separating
+`oueussd` from `malakofauna` needs a lexicon. It does not: `detect_fused_words()` already returns 1 for
+`oueussd` and 0 for `malakofauna`, and **gate 7 already reads it** — inside its `damage` term, behind
+`and not structurally_clean`, where `structurally_clean = valid_word_ratio >= 1.0`. Since
+`compute_valid_ratio` is shape-only (length ≥ 3, ≥ 70% alphabetic, no strange char, no mid-word
+uppercase), it is 1.0 for every line in this population. The one witness that discriminates was being
+suppressed by the one signal that cannot. What genuinely needs word knowledge is the narrower residue —
+`malakofauna` against `edelite` — where nothing about either spelling is wrong.
+* `693e1b4` acts on that: **`_has_shape_garbage_evidence()`**, four `SHORT_GARBAGE_WITNESS_*` constants,
+and `SHORT_GARBAGE_WITNESS_ENABLE` — **off by default, and with no call site**, because the conditional it
+would join is the one-hunk change still under review in PR #48. Measured 8/12 thread-reported garbage
+reached at 0/21 false positives on real vocabulary and notation, and 0 across all 33 committed positive
+fixtures. Two clauses were **deliberately not** reused from `detect_fused_words`: its `len > 14` test
+(flags `Skelettmaterial`) and `_RE_FUSED_CONSONANT_RUN` (flags `vrstva`, `vrstvy`, `ctvrtek` — and
+`vrstva` is the commonest noun in archaeological field documentation). Each refusal carries a test naming
+its counterexample.
+* Same commit closes four test-suite blind spots found alongside. `tests/test_smoke.py` was a **third**
+hand-rolled scoring harness — feeding `categorize_line` the `LANG_SCORE_REMAP` cap instead of
+`trust_lang_score`, and omitting `orig_lang_score` and `garbage_density` entirely, which left them at
+`1.0`/`0.0` and silently disabled `rule_hard_sweep`, `rule_extreme_ppl` and the density branch of
+`_has_strong_garbage_evidence`; it now goes through `_rescore_row`. Three **discriminating** golden edge
+cases replace a pin that could not see the change under review (the old `short_garbage` case sets
+`gibberish_present=True` *and* `valid_word_ratio=0.0`, either of which short-circuits the evidence
+predicate to `True`). A swept **Trash-side** counterpart joins the existing clean-Czech sweep, which only
+ever guarded one direction. And the ablation rule lists in `run_ablation_study.py` /
+`greedy_backward_elimination.py` were stale from before the `penalty_* → rule_*` rename, so
+`DISABLED_RULES` silently did not match and some rules were missing outright — neither list had any test.
+* `5e669bb` fixes the tuner lane. `setup/requirements-sweep.txt` floors scikit-learn at 1.9 and matplotlib
+at 3.11.1, and **both are published for Python ≥ 3.11 only** — on 3.10 the resolver finds nothing and
+`run_optim_pipeline.sh` aborts on a wall of candidate versions that never mentions the interpreter. That
+is now recorded as the measured reason the file had asked for, mirrored in `requirements-finetune.txt`, and
+the script fails fast with the cause, the fix and a `SKIP_DEP_INSTALL=1` escape hatch. Separately, the
+**Sobol backend was broken under numpy 2**: on a zero-variance objective SALib returns `np.array([0.0])`
+from its estimators, and numpy ≥ 2 refuses to assign that into a scalar slot — a degenerate objective
+surfacing as a dtype error two frames inside SALib. Reachable by default, since the sample corpus cannot
+move most constants. Guarded with the `importance_skipped` convention `run_optuna_backend` already used.
+* New `tools/short_garbage_witness_report.py` makes the witness measurable **before** it has a call site:
+it reports, over any delivered `DOC_LINE_CATEG` collection, which lines the predicate reaches against the
+category the pipeline currently assigns, and writes candidates with a blank `gold_categ` column for blind
+annotation. It deliberately computes **text-only** predicates and never re-scores — a test source-inspects
+it for `score_line`/`trust_lang_score` and friends, because reconstructing signals from stored columns is
+the harness bug this repo has now fixed three times.
+* Rule coverage regenerated on 2,171 lines: **16 LOAD-BEARING · 3 REDUNDANT-HERE · 3 DEAD**. Full table and
+the diff against the stale 14-rule log in `tools/SWEEP_NOTES.md`. `rule_hard_sweep` holds at 94 fires;
+`rule_allcaps` and `rule_garbage_density` move `REDUNDANT-HERE → LOAD-BEARING`; `rule_short_garbage`'s
+decisives go 4 → 16. `rule_short_line` posts the first non-zero `clear_loss` (2) on record.
+`rule_bigram_run` and `rule_vowelless` fired zero times — retirement *candidates* pending the full-corpus
+run `RULE_COVERAGE.md` designates as authoritative, not retirements.
+* **State**: 7 open issues. `test` `4017a76`; `master` `ebaec0a`, **4 commits behind** — every previous tag
+is an ancestor of both branches, so a release syncs them first. `CITATION.cff` and
+`setup/para_config.txt` both still read `1.4.6-beta`, and `check_version.py --require-tag` rejects a
+mismatched tag, so the bump precedes the tag. #30's PR [#48](https://github.com/ufal/atrium-alto-postprocess/pull/48)
+is **open as a draft** and unmerged: the shape witness therefore ships **inert**. Merging it flips the three
+new golden pins to `Clear`, which is why they were written to be able to see it.
+
 ---
-_Timeline index refreshed 2026-09-07 against live `test`/`master` HEAD, the current release list, open-issue state
+_Timeline index refreshed 2026-09-09 against live `test`/`master` HEAD, the current release list, open-issue state
 via the GitHub API, and the refreshed `30.digest.md`/`37.digest.md`. Nothing removed from the issues themselves
 (per hub #29); this file is a derived reading aid in `agent_dev_logs/`._

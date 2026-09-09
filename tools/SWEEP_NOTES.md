@@ -36,6 +36,93 @@ The easiest way to execute the full parameter optimization suite (Coverage, RF, 
 ./tools/run_optim_pipeline.sh /path/to/full/DOC_LINE_CATEG config.txt sweep_output_production
 ```
 
+## Current figures — rule coverage regenerated 2026-09-09
+
+Run on `test` @ `4017a76` over **19 documents / 2,171 lines (1,471 scored)** — the
+same corpus as the stale log below, so the two are directly comparable. This is
+the regeneration the warning banner under the next heading asked for, and it
+closes the "numbers need regenerating" risk recorded in
+`agent_dev_logs/plans/30.plan.md`.
+
+Note the corpus is a local `DOC_LINE_CATEG` set, not the three CSVs committed to
+`data_samples/` (15 lines); it spans CTX1921–CTX2016, including three post-2000
+documents. The full-corpus run on the cluster is still the authoritative one for
+retirement decisions.
+
+**Offline re-scorer parity, same run:** `tools/recategorize_from_csv.py` over those
+19 documents reports `total lines changed category: 0` — 893 Clear / 391 Empty /
+186 Noisy / 309 Non-text / 392 Trash, before and after. The `flip_rate == 0`
+baseline therefore still holds on a corpus 145× the committed sample, which is
+worth recording because every driver in `tools/` reads flips as damage.
+
+| rule                         | fire_count | fire_rate | decisive | clear_loss | class          |
+|:-----------------------------|-----------:|----------:|---------:|-----------:|:---------------|
+| `rule_absolute_ppl`          |          4 |    0.0027 |        1 |          0 | LOAD-BEARING   |
+| `rule_allcaps`               |          8 |    0.0054 |        2 |          0 | LOAD-BEARING   |
+| `rule_bigram_run`            |          0 |    0.0000 |        0 |          0 | DEAD           |
+| `rule_damaged_token`         |         73 |    0.0496 |       70 |          0 | LOAD-BEARING   |
+| `rule_domain_notation`       |          1 |    0.0007 |        0 |          0 | REDUNDANT-HERE |
+| `rule_extreme_ppl`           |         65 |    0.0442 |        8 |          0 | LOAD-BEARING   |
+| `rule_forgiven_headline`     |          9 |    0.0061 |        3 |          0 | LOAD-BEARING   |
+| `rule_fragment_tokens`       |         12 |    0.0082 |        0 |          0 | REDUNDANT-HERE |
+| `rule_garbage_density`       |         14 |    0.0095 |        2 |          0 | LOAD-BEARING   |
+| `rule_hard_sweep`            |         94 |    0.0639 |        4 |          0 | LOAD-BEARING   |
+| `rule_inverted`              |          2 |    0.0014 |        0 |          0 | REDUNDANT-HERE |
+| `rule_ledger_fragmentation`  |         91 |    0.0619 |        3 |          0 | LOAD-BEARING   |
+| `rule_lowppl_clear`          |        181 |    0.1230 |        2 |          0 | LOAD-BEARING   |
+| `rule_mid_uppercase`         |          0 |    0.0000 |        0 |          0 | DEAD           |
+| `rule_mostly_readable_noisy` |         91 |    0.0619 |       45 |          0 | LOAD-BEARING   |
+| `rule_reference_floor`       |         10 |    0.0068 |       10 |          0 | LOAD-BEARING   |
+| `rule_short_garbage`         |         66 |    0.0449 |       16 |          0 | LOAD-BEARING   |
+| `rule_short_line`            |        188 |    0.1278 |       11 |          2 | LOAD-BEARING   |
+| `rule_trailing_fill_rescue`  |          8 |    0.0054 |        4 |          0 | LOAD-BEARING   |
+| `rule_vowelless`             |          0 |    0.0000 |        0 |          0 | DEAD           |
+| `rule_wqx_rot`               |         54 |    0.0367 |        1 |          0 | LOAD-BEARING   |
+| `rule_zero_alpha`            |          1 |    0.0007 |        1 |          0 | LOAD-BEARING   |
+
+**Summary: 16 LOAD-BEARING · 3 REDUNDANT-HERE · 3 DEAD** (n_lines=2,171, n_scored=1,471, 22 rules)
+
+DEAD: `rule_bigram_run`, `rule_mid_uppercase`, `rule_vowelless`
+REDUNDANT-HERE: `rule_domain_notation`, `rule_fragment_tokens`, `rule_inverted`
+clear_loss > 0: `rule_short_line`=2
+
+### What moved since the 14-rule log
+
+| rule                         | then (14-rule log)      | now         | reading                                                                                                                                                  |
+|:-----------------------------|:------------------------|:------------|:---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `rule_hard_sweep`            | 94 / 2                  | 94 / 4      | fire count **identical**; the extra decisives come from the rules added around it                                                                        |
+| `rule_extreme_ppl`           | 64 / 3                  | 65 / 8      | the predicted move, and it is small                                                                                                                      |
+| `rule_absolute_ppl`          | 4 / 1                   | 4 / 1       | unchanged                                                                                                                                                |
+| `rule_allcaps`               | 7 / 0 `REDUNDANT-HERE`  | 8 / 2       | **now LOAD-BEARING** — it is no longer masked                                                                                                            |
+| `rule_garbage_density`       | 20 / 0 `REDUNDANT-HERE` | 14 / 2      | **now LOAD-BEARING** on fewer fires                                                                                                                      |
+| `rule_short_garbage`         | 71 / 4                  | 66 / **16** | `rule_domain_notation` took fires off it, and its remaining fires decide four times as often — it is the load-bearing route for the issue-#30 population |
+| `rule_lowppl_clear`          | 187 / 70                | 181 / 2     | decisives absorbed by `rule_damaged_token` (73 / 70), which did not exist in the old log                                                                 |
+| `rule_mostly_readable_noisy` | 170 / 156               | 91 / 45     | same absorption                                                                                                                                          |
+
+Three points worth keeping in view:
+
+* **`rule_short_line` is the first rule on record with a non-zero `clear_loss` (2).**
+  Removing it would destroy two lines the pipeline currently calls `Clear`. It is
+  `LOAD-BEARING` regardless, so this changes nothing operationally — but it is the
+  first time the destructive-cost column has been anything but 0, and the sweep
+  drivers all read that column.
+* **Three rules fired zero times: `rule_bigram_run`, `rule_mid_uppercase`, `rule_vowelless`.**
+  Only `rule_mid_uppercase` is expected: it is declared in
+  `tests/test_pipeline_parity.py::UNREACHABLE_RULES` because gate 9d and gate 7
+  share the `word_count <= 2` condition and gate 7 always returns first. The other
+  two are **retirement candidates, not retirements** — `RULE_COVERAGE.md` requires
+  full-corpus confirmation before a rule is retired, and 1,471 scored lines is a
+  sample. Neither belongs in `UNREACHABLE_RULES`, which is for structural
+  shadowing: `rule_vowelless` is genuinely reachable at `word_count == 3`, where
+  gate 7 does not shadow it, so it is rare rather than unreachable.
+* `rule_domain_notation` reads `REDUNDANT-HERE` on **1 fire / 0 decisive**. The
+  sample does contain post-2000 material (CTX2006, CTX2014, CTX2016 — roughly 250
+  lines), so this is not simply the absence of modern documents; the notation
+  shapes it recovers are just rare here, and on its single fire an earlier rule
+  reached the same verdict. Its measured effect on the issue-#30 population — 30
+  of 508 graded lines, 29 matching the annotation — came from the contributor's
+  corpora, not from this set, and that remains the figure to cite for it.
+
 <details>
     <summary>Latest console output from the pipeline run (no optuna due to sqlite3 dep)</summary>
 
@@ -59,6 +146,7 @@ The easiest way to execute the full parameter optimization suite (Coverage, RF, 
 > Every tool here whose premise is "flips = damage" inherits that gap.
 >
 > Regenerate with `./tools/run_optim_pipeline.sh` before quoting any of it.
+> **Done — see "Current figures" immediately above this block for the 22-rule run.**
 
 ```terminaloutput
 (venv-lang) lutsai@stargate:/lnet/work/projects/atrium/alto_util$ ./tools/run_optim_pipeline.sh data_samples/DOC_LINE_CATEG config.txt sweep_output_production
