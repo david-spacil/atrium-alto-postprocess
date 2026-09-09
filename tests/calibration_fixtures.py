@@ -286,14 +286,16 @@ ALLCAPS_HEADLINE = [
     ),
 ]
 
-ALL_FIXTURES = (
-    CLEAR
-    + NOISY
-    + TRASH_GARBAGE
-    + TRASH_INVERTED
-    + NON_TEXT
-    + ROT_FALSE_POSITIVE_GUARDS
-    + HEADLINE_NUMBERED
-    + SHORT_EXCEPTIONS
-    + ALLCAPS_HEADLINE
-)
+# ── No ALL_FIXTURES aggregate. Deliberate; do not re-add. ────────────────────
+# There used to be one here, concatenating the nine 5-tuple lists above. It was
+# imported by nothing, and its deadness was the only thing keeping it harmless:
+# rows in these lists may be `pytest.param(...)` wrappers rather than plain
+# tuples (issue #30 marks one row of TRASH_INVERTED as a strict xfail), and a
+# ParameterSet is a 3-field NamedTuple. So `len(row)` on a wrapped row is 3, not
+# 5, and any consumer unpacking the aggregate positionally would raise a
+# TypeError naming neither the list nor the row.
+#
+# Consume the individual lists instead. Anything reading one positionally
+# outside a @pytest.mark.parametrize should go through
+# tests/test_calibration.py::_row_values, which unwraps a ParameterSet; the
+# arities are pinned by test_every_fixture_row_has_its_declared_arity.

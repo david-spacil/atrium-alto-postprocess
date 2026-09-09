@@ -2,75 +2,83 @@
 tests/test_smoke.py
 ===================
 End-to-end smoke tests for the pipeline categorization logic with mocked model inferences.
+
+The mocking stops at the MODELS. Everything downstream of them goes through the
+production scoring step (``classify_TEXT.score_line``, reached via
+``recategorize_from_csv._rescore_row``) rather than a local re-implementation of
+it -- see ``_process_mocked_line`` for why that distinction is load-bearing.
 """
 
-from text_util import (
-    analyze_rotation_signals,
-    categorize_line,
-    compute_garbage_density,
-    compute_quality_score,
-    compute_valid_ratio,
-    compute_vowel_ratio,
-    compute_word_weird_ratio,
-    detect_fused_words,
-    detect_gibberish_words,
-    detect_wx_words,
-    pre_filter_line,
-    score_words_in_line,
-)
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+# Stub the GPU/ML stack before importing the tool (it imports classify_TEXT),
+# mirroring tests/test_calibration.py and tests/test_rotation_regression.py.
+for _n in ("torch", "tqdm", "fasttext", "transformers"):
+    sys.modules.setdefault(_n, types.ModuleType(_n))
+sys.modules["tqdm"].tqdm = lambda x, **k: x  # type: ignore[attr-defined]
+
+_ROOT = Path(__file__).resolve().parent.parent
+_TOOLS = _ROOT / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+
+from recategorize_from_csv import _load_lang_config, _rescore_row  # noqa: E402
+
+import classify_TEXT as LC  # noqa: E402
+from text_util import pre_filter_line  # noqa: E402
+
+_EXPECTED, _KNOWN = _load_lang_config(str(_ROOT / "setup" / "config.txt"))
 
 
 class TestFullPipelineSmoke:
     def _process_mocked_line(self, line_text, mock_ppl, mock_lang_score):
-        """Simulates the CPU/GPU orchestrator logic for a single line."""
-        cat, clean_text = pre_filter_line(line_text)
-        if cat != "Process":
-            return cat
+        """Categorise one line through the REAL production path, models aside.
 
-        wc = len(clean_text.split())
-        cc = len(clean_text)
-        original_text = line_text
+        This used to hand-roll its own copy of the orchestrator, and the copy
+        was wrong in three ways that all pointed the same direction -- towards
+        making garbage look cleaner than production sees it:
 
-        vowel_ratio = compute_vowel_ratio(original_text)
-        g_density = compute_garbage_density(original_text)
-        # rot_ratio = compute_rotatable_ratio(clean_text)
-        weird_ratio = compute_word_weird_ratio(score_words_in_line(clean_text))
-        valid_ratio = compute_valid_ratio(clean_text)
+          * it passed ``min(mock_lang_score, 0.75)`` -- the ``LANG_SCORE_REMAP``
+            cap, i.e. the score RECORDED in the CSV -- where production passes
+            the two-tier ``trust_lang_score``;
+          * it never passed ``orig_lang_score``, leaving it at the ``1.0``
+            default, which silently disables ``rule_hard_sweep`` (needs
+            ``< 0.45``), ``rule_extreme_ppl`` (needs ``< 0.85``) and one clause
+            of ``_has_strong_garbage_evidence``;
+          * it never passed ``garbage_density``, leaving it at ``0.0``, which
+            disables that predicate's density clause too.
 
-        gibb_count = detect_gibberish_words(clean_text)
-        wx_count = detect_wx_words(clean_text)
-        fused_words = detect_fused_words(clean_text)
+        So three Trash routes could not fire in this module at all, and every
+        assertion here was being made about a signal vector the pipeline never
+        produces. This was the third hand-rolled harness in the suite with that
+        class of bug; the other two were fixed in
+        ``tests/test_rotation_regression.py`` and ``tests/test_calibration.py``,
+        and the repo's rule is one scoring engine, not two (CONTRIBUTING.md,
+        ``tests/test_scoring_single_source.py``).
 
-        is_upright_czech, ghost_dominated = analyze_rotation_signals(clean_text)
+        ``original_lang`` is ces (expected, trust tier 1.0), matching
+        ``tests/test_calibration.py::_categ``. That is the strict choice for a
+        smoke test: tier 1.0 is the LARGEST score the tiers can produce, so the
+        "must be Trash" assertions are harder to satisfy, not easier.
+        """
+        action, clean_text = pre_filter_line(line_text)
+        if action != "Process":
+            return action
 
-        qs = compute_quality_score(
-            valid_word_ratio=valid_ratio,
-            perplexity=mock_ppl,
-            text_length=cc,
-            weird_ratio=weird_ratio,
-            vowel_ratio=vowel_ratio,
-            garbage_density=g_density,
-            lang_score=mock_lang_score,
-            gibberish_ratio=(gibb_count + wx_count) / max(wc, 1),
-            fused_ratio=fused_words / max(wc, 1),
-            is_upright_czech=is_upright_czech,
-        )
-
-        capped_lang_score = min(mock_lang_score, 0.75)
-        final_cat, _ = categorize_line(
-            qs,
-            clean_text,
-            wc,
-            vowel_ratio,
-            mock_ppl,
-            weird_ratio=weird_ratio,
-            valid_word_ratio=valid_ratio,
-            lang_score=capped_lang_score,
-            gibberish_present=(gibb_count + wx_count) > 0,
-            is_upright_czech=is_upright_czech,
-            ghost_dominated=ghost_dominated,
-        )
-        return final_cat
+        row = {
+            "text": clean_text,
+            "original_text": line_text,
+            "original_lang": "ces_Latn",
+            "orig_lang_score": f"{mock_lang_score}",
+            "perplex": f"{mock_ppl}",
+            "categ": "Noisy",
+            "word_count": str(len(clean_text.split())),
+        }
+        return _rescore_row(row, _EXPECTED, _KNOWN)["categ"]
 
     def test_clean_czech_prose_is_clear_or_noisy(self):
         prose_lines = [
@@ -128,3 +136,33 @@ class TestFullPipelineSmoke:
         for line in ["Náčrt sondy.", "Praha", "kostra hrob náramek"]:
             cat = self._process_mocked_line(line, mock_ppl=200.0, mock_lang_score=0.97)
             assert cat != "Trash", f"Clean Czech '{line}' wrongly Trashed ({cat})"
+
+    def test_harness_feeds_the_trust_tier_not_the_remap_cap(self):
+        """Regression lock on the harness bug this module used to carry.
+
+        Mirrors tests/test_calibration.py::
+        test_fixture_languages_reach_the_guards_through_the_trust_tier, and is
+        asserted on the MECHANISM for the same reason: a category-level check
+        goes vacuous the moment the two numbers happen to agree, which is
+        precisely when the lock matters least and the bug hides best.
+
+        The old harness passed min(lang_score, LANG_SCORE_REMAP) and omitted
+        orig_lang_score entirely. Production passes trust_lang_score to the
+        structural guards and the RAW FastText score to the perplexity routes;
+        those are three different numbers on the same line.
+        """
+        sig = LC.score_line(
+            text_content="malakofauna",
+            original_text="malakofauna",
+            original_lang="isl_Latn",
+            original_lang_score=0.56,
+            perplexity=1210.0,
+            known_lang_bases=_KNOWN,
+            expected_langs=_EXPECTED,
+        )
+        assert sig["trust_lang_score"] == pytest.approx(0.56 * LC.TRUST_TIER_UNKNOWN), (
+            "the structural guards must see the tier-scaled score"
+        )
+        assert sig["trust_lang_score"] < 0.56, "an unknown language base must actually be scaled down"
+        assert sig["valid_word_ratio"] == 1.0, "the signal vector must be the full one, not the defaults"
+        assert sig["garbage_density"] == 0.0

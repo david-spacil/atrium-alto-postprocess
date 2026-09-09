@@ -39,6 +39,27 @@ The easiest way to execute the full parameter optimization suite (Coverage, RF, 
 <details>
     <summary>Latest console output from the pipeline run (no optuna due to sqlite3 dep)</summary>
 
+> [!WARNING]
+> **This run log is stale and is kept as a record, not as current figures.** It
+> was captured when the six §9 gates were still spelled `penalty_*` and lived in
+> `categorize_line`; they are now `rule_*` inside `determine_category`, and the
+> registry has grown from 14 rules to 22 (`rule_zero_alpha`, `rule_short_line`,
+> `rule_damaged_token`, `rule_reference_floor`, `rule_bigram_run`,
+> `rule_fragment_tokens`, `rule_forgiven_headline`, `rule_domain_notation`).
+>
+> Two consequences for anyone reading the numbers below. The LOO pass covered
+> 14 of what are now 22 rules, so eight rules have no `decisive` figure here at
+> all. And `rule_domain_notation` is no longer independent of the perplexity
+> routes (it exempts `rule_extreme_ppl` and `rule_absolute_ppl`), so ablating it
+> re-arms two rules at once and the 94 / 64 / 4 fire counts will move.
+>
+> The `flip_rate == 0` baseline asserted further down this file is also no
+> longer what the suite enforces: `tests/test_recategorize_parity.py` now allows
+> 5% globally and 30% per document, relaxed for the structural rule additions.
+> Every tool here whose premise is "flips = damage" inherits that gap.
+>
+> Regenerate with `./tools/run_optim_pipeline.sh` before quoting any of it.
+
 ```terminaloutput
 (venv-lang) lutsai@stargate:/lnet/work/projects/atrium/alto_util$ ./tools/run_optim_pipeline.sh data_samples/DOC_LINE_CATEG config.txt sweep_output_production
 ============================================================

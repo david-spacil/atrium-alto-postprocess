@@ -44,7 +44,16 @@ from recategorize_from_csv import _load_lang_config, evaluate_dataframe, load_cs
 
 from text_util import override_constants  # noqa: E402
 
-# Using the unified rules array covering structural gateways and dynamic penalties
+# Every rule the categoriser can fire. Kept equal to
+# rule_coverage_report.RULES -- which is itself kept equal to the _fire() call
+# sites in text_util.py -- and asserted by
+# tests/test_rule_coverage.py::test_ablation_rule_lists_are_subsets_of_the_registry.
+#
+# It was neither, for a long time. Four entries were still spelled `penalty_*`
+# from before those gates were renamed to `rule_*`, so DISABLED_RULES matched
+# nothing on them: every ablation report since carried four rows of pure zero
+# that read as "prune" for a rule that had never been disabled. Eleven real
+# rules were missing outright. Neither list was covered by any test.
 CANDIDATE_RULES: Set[str] = {
     "rule_hard_sweep",
     "rule_extreme_ppl",
@@ -52,16 +61,22 @@ CANDIDATE_RULES: Set[str] = {
     "rule_inverted",
     "rule_allcaps",
     "rule_garbage_density",
+    "rule_zero_alpha",
     "rule_short_garbage",
     "rule_domain_notation",
+    "rule_short_line",
     "rule_lowppl_clear",
     "rule_mostly_readable_noisy",
+    "rule_damaged_token",
     "rule_trailing_fill_rescue",
     "rule_forgiven_headline",
-    "penalty_wqx_rot",
-    "penalty_vowelless",
-    "penalty_ledger_fragmentation",
-    "penalty_mid_uppercase",
+    "rule_reference_floor",
+    "rule_wqx_rot",
+    "rule_vowelless",
+    "rule_ledger_fragmentation",
+    "rule_mid_uppercase",
+    "rule_bigram_run",
+    "rule_fragment_tokens",
 }
 
 

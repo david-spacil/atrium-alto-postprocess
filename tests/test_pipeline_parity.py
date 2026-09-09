@@ -223,6 +223,75 @@ EDGE_CASES: list[tuple[str, dict]] = [
             gibberish_present=True,
         ),
     ),
+    # ── Gate 6 WITHOUT a second witness: the population issue #30 is about ──
+    # The two cases above cannot see a gate on rule_short_garbage. Both set
+    # gibberish_present=True AND valid_word_ratio=0.0, and EITHER of those alone
+    # short-circuits _has_strong_garbage_evidence() to True -- so they record the
+    # same triple whether the rule convicts on shape alone or on shape plus a
+    # second witness. A golden file that cannot see a change is not pinning it.
+    #
+    # These three can. Their signals are the real production vectors, measured
+    # through classify_TEXT.score_line(), not values chosen to fit the branch:
+    # the trust tier is what puts lang_score at 0.28 (isl @ 0.56) and 0.385
+    # (ast @ 0.77), while orig_lang_score keeps FastText's raw number.
+    #
+    # qs=0.5499 is score_line's own output for these lines. It sits below
+    # CATEG_TRASH_SCORE_MAX (0.55), so the pinned Trash satisfies
+    # test_quality_score_is_consistent_with_its_label, and far below
+    # thresh_trash (0.90), so a score guard cannot mask the routing.
+    #
+    # The first two are domain vocabulary that #30 argues should NOT be Trash;
+    # the third is OCR garbage that should stay Trash. They share every signal
+    # the pipeline computes, which is exactly why the issue is a trade and not a
+    # free win -- and why all three move together under any gate on this rule.
+    (
+        "short_garbage_vocabulary_without_strong_evidence",
+        dict(
+            qs=0.5499,
+            txt="malakofauna",
+            wc=1,
+            vowel_ratio=0.5455,
+            perplexity=850.0,
+            valid_word_ratio=1.0,
+            lang_score=0.28,
+            orig_lang_score=0.56,
+            weird_ratio=0.35,
+            gibberish_present=False,
+            garbage_density=0.0,
+        ),
+    ),
+    (
+        "short_garbage_binomial_without_strong_evidence",
+        dict(
+            qs=0.5499,
+            txt="Equus caballus",
+            wc=2,
+            vowel_ratio=0.4615,
+            perplexity=640.0,
+            valid_word_ratio=1.0,
+            lang_score=0.385,
+            orig_lang_score=0.77,
+            weird_ratio=0.275,
+            gibberish_present=False,
+            garbage_density=0.0,
+        ),
+    ),
+    (
+        "short_garbage_shape_witness_without_strong_evidence",
+        dict(
+            qs=0.5499,
+            txt="oueussd",
+            wc=1,
+            vowel_ratio=0.5714,
+            perplexity=850.0,
+            valid_word_ratio=1.0,
+            lang_score=0.9163,
+            orig_lang_score=0.9163,
+            weird_ratio=0.35,
+            gibberish_present=False,
+            garbage_density=0.0,
+        ),
+    ),
     # ── Gate 7: short lines (1-2 words) ──
     (
         "short_line_clear",
@@ -707,6 +776,61 @@ def test_sample_corpus_output_is_pinned(golden):
     assert not drifted, f"{len(drifted)}/{len(expected)} sample lines changed category or score:\n" + json.dumps(
         dict(list(drifted.items())[:20]), indent=2, ensure_ascii=False
     )
+
+
+def test_short_garbage_edge_case_is_blind_to_the_evidence_gate():
+    """Why the three *_without_strong_evidence cases above had to be added.
+
+    The pre-existing ``short_garbage`` case sets ``gibberish_present=True`` AND
+    ``valid_word_ratio=0.0``. Either alone short-circuits
+    ``_has_strong_garbage_evidence()`` to True at its second or third clause, so
+    that case records the same (categ, score, reason, fired) tuple whether gate 6
+    convicts on shape alone or on shape plus a second witness.
+
+    Asserted on the case's SIGNALS rather than on its outcome, so it holds
+    however issue #30 resolves: it is a statement about what the fixture can
+    detect, not about what the categoriser currently does.
+    """
+    cases = dict(EDGE_CASES)
+    blind = cases["short_garbage"]
+    assert blind["gibberish_present"] is True
+    assert blind["valid_word_ratio"] == 0.0
+
+    for key in (
+        "short_garbage_vocabulary_without_strong_evidence",
+        "short_garbage_binomial_without_strong_evidence",
+        "short_garbage_shape_witness_without_strong_evidence",
+    ):
+        sighted = cases[key]
+        assert sighted["gibberish_present"] is False
+        assert sighted["valid_word_ratio"] > 0.20
+        assert sighted["garbage_density"] < tu.CATEG_GARBAGE_DENSITY_HIGH
+        assert 0.0 < sighted["weird_ratio"] < 0.40
+        assert not (sighted["lang_score"] <= 0.20 and sighted["orig_lang_score"] <= 0.50)
+        assert sighted["wc"] <= tu.ISOLATED_CHAR_MIN_TOKENS
+        assert not tu.has_cz_diacs(sighted["txt"])
+        assert not tu.is_structured_line(sighted["txt"])
+        assert not tu.is_domain_notation(sighted["txt"])
+
+
+def test_fire_records_the_shape_match_not_the_conviction():
+    """``_fire("rule_short_garbage")`` sits ABOVE gate 6's return.
+
+    Harmless today, because the gate returns unconditionally once its shape test
+    matches, so "fired" and "convicted" are the same event. It stops being the
+    same event the moment a second witness is required (issue #30): the rule
+    then fires on every shape match and convicts on a subset, while
+    ``tools/rule_coverage_report.py`` and this golden file's ``fired`` list both
+    keep counting the shape matches.
+
+    Pinned as a source-level fact so that gap is a documented property of the
+    telemetry rather than a surprise in the next coverage report. If the call is
+    ever moved below the return, delete this test and say so in the message --
+    do not relax it.
+    """
+    source = (REPO_ROOT / "text_util.py").read_text(encoding="utf-8")
+    block = source.split("# 6. Short-line garbage")[1].split("# 7. Short lines")[0]
+    assert block.index('_fire("rule_short_garbage")') < block.index('return "Trash", "trash_threshold"')
 
 
 def test_quality_score_is_consistent_with_its_label(golden):

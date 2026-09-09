@@ -80,6 +80,45 @@ def test_inverted_trash_stays_trash_at_default(text, ppl, lang_score, expected, 
     assert categ == "Trash", f"Failed to catch inverted trash at default config: {note}"
 
 
+_SWEPT_PARAMS = [
+    "ROT_RATIO_INVERTED_MIN",
+    "WEIRD_RATIO_INVERTED_MIN",
+    "PPL_INVERTED_MIN",
+    "SUSPICIOUS_ROT_RATIO",
+    "CATEG_GARBAGE_DENSITY_HIGH",
+    "SUSPICIOUS_WQX_RATIO",
+    "INVERTED_WEIRD_PENALTY",
+]
+
+
+@pytest.mark.parametrize("text, ppl, lang_score, expected, note", TRASH_INVERTED)
+def test_inverted_trash_stays_trash_swept_bounds(text, ppl, lang_score, expected, note):
+    """Trash-side mirror of the clean-Czech sweep below.
+
+    Without it the tuning gate is one-sided. It can prove that moving a constant
+    to either end of its search space never DESTROYS valid text -- but not that
+    the garbage routes are still doing anything at that setting. A rule that is
+    inert at every point in the space is indistinguishable, under a Clear-side
+    check alone, from a rule that works; that asymmetry is exactly the failure
+    mode issue #30 is about, where the largest Trash producer in the corpus was
+    re-examined and nothing in the suite could say what it still convicted.
+
+    Note this is a deliberate TIGHTENING: widening a bound in
+    const_importance_sweep.SEARCH_SPACE will now fail here rather than silently
+    disarming a route. That is the intent -- the search space is a claim about
+    which settings are safe, and this is the half of the claim nothing checked.
+
+    Parametrized over TRASH_INVERTED so that any pytest.param marks on those
+    rows (issue #30 marks one) carry here automatically and stay in one place.
+    """
+    for param in _SWEPT_PARAMS:
+        for bound in ("low", "high"):
+            val = SEARCH_SPACE[param][bound]
+            with override_constants({param: val}):
+                categ = _process_mocked_line(text, ppl, lang_score)
+                assert categ == "Trash", f"inverted trash escaped with {param}={val} ({bound}): {note}"
+
+
 @pytest.mark.parametrize("text, ppl, lang_score, expected, note", ROT_FALSE_POSITIVE_GUARDS + CLEAR)
 def test_clean_czech_tuning_robustness_swept_bounds(text, ppl, lang_score, expected, note):
     """
@@ -87,17 +126,7 @@ def test_clean_czech_tuning_robustness_swept_bounds(text, ppl, lang_score, expec
     const_importance_sweep search space boundaries to ensure parameter tuning won't
     accidentally demote valid Czech text.
     """
-    params_to_sweep = [
-        "ROT_RATIO_INVERTED_MIN",
-        "WEIRD_RATIO_INVERTED_MIN",
-        "PPL_INVERTED_MIN",
-        "SUSPICIOUS_ROT_RATIO",
-        "CATEG_GARBAGE_DENSITY_HIGH",
-        "SUSPICIOUS_WQX_RATIO",
-        "INVERTED_WEIRD_PENALTY",
-    ]
-
-    for param in params_to_sweep:
+    for param in _SWEPT_PARAMS:
         for bound in ("low", "high"):
             val = SEARCH_SPACE[param][bound]
             with override_constants({param: val}):

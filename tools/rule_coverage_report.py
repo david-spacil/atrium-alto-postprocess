@@ -114,8 +114,12 @@ RULES: list[str] = sorted(
     ]
 )
 
-_DETERMINE_RULES = [r for r in RULES if r.startswith("rule_")]
-_PENALTY_RULES = [r for r in RULES if r.startswith("penalty_")]
+# There used to be a _DETERMINE_RULES / _PENALTY_RULES split here, partitioning
+# RULES on a "penalty_" prefix. Both were dead code and one was a lie: the
+# penalties were renamed to rule_* long ago, so _PENALTY_RULES had been the
+# empty list ever since, and _DETERMINE_RULES was just RULES again under another
+# name. The same stale prefix survived in the two ablation drivers, where it did
+# real damage -- see the comment above run_ablation_study.RULES_TO_ABLATE.
 
 # Columns widths for terminal output
 _W_NAME = 34

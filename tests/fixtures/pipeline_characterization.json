@@ -86,6 +86,30 @@
         "rule_short_line"
       ]
     ],
+    "short_garbage_vocabulary_without_strong_evidence": [
+      "Trash",
+      0.5499,
+      "trash_threshold",
+      [
+        "rule_short_garbage"
+      ]
+    ],
+    "short_garbage_binomial_without_strong_evidence": [
+      "Trash",
+      0.5499,
+      "trash_threshold",
+      [
+        "rule_short_garbage"
+      ]
+    ],
+    "short_garbage_shape_witness_without_strong_evidence": [
+      "Trash",
+      0.5499,
+      "trash_threshold",
+      [
+        "rule_short_garbage"
+      ]
+    ],
     "short_line_clear": [
       "Clear",
       0.95,

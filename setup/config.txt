@@ -185,6 +185,30 @@ FUSED_VOWEL_RUN_MIN         = 3
 WX_REPEAT_MIN               = 2
 ISOLATED_CHAR_RATIO_MAX     = 0.40
 ISOLATED_CHAR_MIN_TOKENS    = 3
+
+# ── rule_short_garbage shape witness (issue #30) ────────────────────────────
+# OFF by default; ships inert and measurable. When true, a second witness
+# becomes available to the short-line garbage route: a phonotactic SHAPE test
+# that reaches `oueussd` / `sektlll` / `cuxoaid` / `Tthts I` without touching
+# `malakofauna` / `diapozitiv` / `Equus caballus` / `vrstva` -- the four signals
+# `_has_strong_garbage_evidence()` misses on that whole population.
+# Do not turn this on before measuring it against annotated lines: the in-tree
+# sample corpus holds 15 lines and cannot validate it. See
+# agent_dev_logs/plans/30.plan.md.
+SHORT_GARBAGE_WITNESS_ENABLE            = false
+# Minimum ALPHABETIC characters in a sub-token before any shape test applies.
+# Also what keeps every SHORT_VALID_WORDS / _NEUTRAL_LEXICON member out by
+# construction (`se`, `po`, `mm`, `ks` are all shorter than this).
+SHORT_GARBAGE_WITNESS_MIN_ALPHA         = 4
+# Character-variety clause: distinct letters / letters at or below the max, on
+# tokens at least MIN_ALPHA long. 7 / 0.50 measured: catches `vansasaasasa`;
+# at 6 it false-positives `Hannah`.
+SHORT_GARBAGE_WITNESS_VARIETY_MIN_ALPHA = 7
+SHORT_GARBAGE_WITNESS_VARIETY_MAX       = 0.50
+# Triple-repeated-character clause applies only up to this many letters.
+# `sektlll` and `NINNNIC` are 7; the cap is what keeps the German compound
+# `Schifffahrt` out.
+SHORT_GARBAGE_WITNESS_TRIPLE_MAX_ALPHA  = 8
 SYM_LET_DIG_NONTEXT         = true
 MOSTLY_READABLE_VALID_MIN   = 0.85
 SHORT_NOISY_QS_PENALTY      = 0.20

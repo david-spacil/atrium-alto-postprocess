@@ -45,11 +45,47 @@ from tests.calibration_fixtures import (  # noqa: E402
     ROT_FALSE_POSITIVE_GUARDS,
     SHORT_EXCEPTIONS,
     TRASH_GARBAGE,
+    TRASH_INVERTED,
     VOCABULARY_SHORT,
 )
-from text_util import pre_filter_line  # noqa: E402
+from text_util import _has_shape_garbage_evidence, _has_strong_garbage_evidence, pre_filter_line  # noqa: E402
 
 _EXPECTED, _KNOWN = _load_lang_config(str(_ROOT / "setup" / "config.txt"))
+
+
+def _row_values(row):
+    """Fixture rows may be plain tuples OR pytest.param() ParameterSets.
+
+    Issue #30 wraps the `oueussd` row of TRASH_INVERTED in ``pytest.param(...)``
+    to carry a strict xfail. ``pytest.param`` returns a ParameterSet, a 3-field
+    NamedTuple, so ``len(row)`` on that row silently becomes 3 and any 5-tuple
+    unpack over the list raises a TypeError naming neither the list nor the row.
+
+    ``@pytest.mark.parametrize`` unwraps ParameterSets itself, so only code that
+    reads a fixture list positionally OUTSIDE parametrize needs this. Everything
+    that does goes through here.
+    """
+    return tuple(getattr(row, "values", row))
+
+
+# The declared shape of every fixture list. Nine are 5-tuples
+# ``(text, ppl, orig_lang_score, expected_categ, note)``; the two issue-#30
+# lists carry the FastText language at index 3, because scoring them as Czech
+# grants trust tier 1.0 where production applies TRUST_TIER_UNKNOWN — see the
+# comment block above VOCABULARY_SHORT in tests/calibration_fixtures.py.
+_FIXTURE_ARITIES = [
+    ("CLEAR", 5),
+    ("NOISY", 5),
+    ("TRASH_GARBAGE", 5),
+    ("TRASH_INVERTED", 5),
+    ("NON_TEXT", 5),
+    ("ROT_FALSE_POSITIVE_GUARDS", 5),
+    ("HEADLINE_NUMBERED", 5),
+    ("SHORT_EXCEPTIONS", 5),
+    ("ALLCAPS_HEADLINE", 5),
+    ("NOTATION_SHORT", 6),
+    ("VOCABULARY_SHORT", 6),
+]
 
 
 def _categ(text, ppl, lang_score, original_lang="ces_Latn"):
@@ -184,7 +220,8 @@ def test_fixture_languages_reach_the_guards_through_the_trust_tier():
     That artifact is why two of the three candidates offered in issue #30 looked
     non-discriminating.
     """
-    for text, ppl, ls, lang, _exp, _note in VOCABULARY_SHORT:
+    for row in VOCABULARY_SHORT:
+        text, ppl, ls, lang, _exp, _note = _row_values(row)
         sig = LC.score_line(
             text_content=text,
             original_text=text,
@@ -263,3 +300,179 @@ def test_notation_survives_perplexity_when_language_is_placed():
             apply_short_cap=False,
         )["categ"]
         assert categ != "Trash", f"{text} was convicted on perplexity alone"
+
+
+@pytest.mark.parametrize("name, arity", _FIXTURE_ARITIES)
+def test_every_fixture_row_has_its_declared_arity(name, arity):
+    """Structural guard on tests/calibration_fixtures.py.
+
+    Two shapes coexist there (5-tuple and 6-tuple, the language at index 3), and
+    since issue #30 a row may additionally be a ``pytest.param(...)`` wrapper.
+    Both facts are invisible until something unpacks a row and gets a TypeError
+    that names neither the list nor the row. This is the test that names them.
+
+    It is also why the ALL_FIXTURES aggregate was removed: concatenating lists
+    of two different arities, one of which may contain ParameterSets, is a shape
+    error waiting for its first consumer.
+    """
+    import tests.calibration_fixtures as CF
+
+    rows = getattr(CF, name)
+    assert rows, f"{name} is empty"
+    for row in rows:
+        values = _row_values(row)
+        assert len(values) == arity, f"{name}: expected {arity} fields, got {len(values)} in {row!r}"
+        assert isinstance(values[0], str), f"{name}: first field must be the text, got {values[0]!r}"
+
+
+def test_strong_evidence_is_false_on_the_entire_disputed_population():
+    """The mechanism behind issue #30, asserted where a category cannot hide it.
+
+    `_has_strong_garbage_evidence()` is the second witness six §9 rules require,
+    and the one proposed as a gate on `rule_short_garbage`. On the short
+    diacritic-free population that issue #30 is about it returns False on all
+    six of its clauses at once:
+
+      * `gibberish_present`  — 0; these are not vowel-dominated tokens
+      * `valid_word_ratio <= 0.20` — the ratio is 1.0, because
+        `compute_valid_ratio()` is shape-only (length >= 3, >= 70% alphabetic,
+        no strange character, no mid-word uppercase) and every line here passes
+      * `lang_score <= 0.20 and orig_lang_score <= 0.50` — fails on the FIRST
+        conjunct: the trust tier lands these at 0.28-0.92, not below 0.20
+      * `garbage_density >= 0.35` — 0.0
+      * `weird_ratio >= 0.75` and the `<= 0.40 / >= 0.40` pair — weird_ratio is
+        ~0.28-0.35, under both
+
+    So gating gate 6 behind it is, ON THIS POPULATION, equivalent to deleting
+    the rule — not "adding a second witness", because there is no second witness
+    here to consult. Asserted on the predicate rather than on a category
+    deliberately: it holds before that gate lands and after it, so it stays a
+    meaningful lock through the change instead of flipping with the fixtures.
+    """
+    for row in VOCABULARY_SHORT:
+        text, ppl, ls, lang, _exp, note = _row_values(row)
+        sig = LC.score_line(
+            text_content=text,
+            original_text=text,
+            original_lang=lang,
+            original_lang_score=ls,
+            perplexity=ppl,
+            known_lang_bases=_KNOWN,
+            expected_langs=_EXPECTED,
+        )
+        assert sig["valid_word_ratio"] == 1.0, (
+            f"{text!r}: compute_valid_ratio is shape-only, which is what suppresses the witness"
+        )
+        assert not _has_strong_garbage_evidence(
+            text,
+            valid_word_ratio=sig["valid_word_ratio"],
+            lang_score=sig["trust_lang_score"],
+            orig_lang_score=ls,  # classify_TEXT passes the RAW FastText score here
+            gibberish_present=(sig["gibberish"] + sig["weird_wx"]) > 0,
+            garbage_density=sig["garbage_density"],
+            weird_ratio=sig["word_weird"],
+            is_upright_czech=sig["is_upright_czech"],
+        ), note
+
+
+def test_strong_evidence_is_also_false_on_the_garbage_it_should_catch():
+    """The other half of the same finding, and the reason #30 is a real trade.
+
+    `oueussd` is genuine OCR garbage and shares every signal with the domain
+    vocabulary above, so the predicate misses it too. A gate that lifts
+    `malakofauna` therefore lifts `oueussd` with it; the strict xfail on that
+    fixture in tests/test_rotation_regression.py is the record of that debt.
+
+    Pinned here so the symmetry is a stated fact rather than something a reader
+    has to rediscover from two files.
+    """
+    text, ppl, ls, _exp, note = _row_values(TRASH_INVERTED[-1])
+    assert text == "oueussd", "fixture moved — update this test rather than the assertion"
+    sig = LC.score_line(
+        text_content=text,
+        original_text=text,
+        original_lang="ces_Latn",
+        original_lang_score=ls,
+        perplexity=ppl,
+        known_lang_bases=_KNOWN,
+        expected_langs=_EXPECTED,
+    )
+    assert not _has_strong_garbage_evidence(
+        text,
+        valid_word_ratio=sig["valid_word_ratio"],
+        lang_score=sig["trust_lang_score"],
+        orig_lang_score=ls,  # classify_TEXT passes the RAW FastText score here
+        gibberish_present=(sig["gibberish"] + sig["weird_wx"]) > 0,
+        garbage_density=sig["garbage_density"],
+        weird_ratio=sig["word_weird"],
+        is_upright_czech=sig["is_upright_czech"],
+    ), note
+
+
+def _second_witness(text, ppl, ls, lang):
+    """The disjunction the short-line garbage route will evaluate (issue #30).
+
+    Exactly `_has_strong_garbage_evidence(...) or _has_shape_garbage_evidence(...)`,
+    on the signal vector `classify_TEXT.score_line` produces for the line. Kept
+    here rather than in the module under test because the left operand needs the
+    full production vector, which is what this file already builds.
+    """
+    sig = LC.score_line(
+        text_content=text,
+        original_text=text,
+        original_lang=lang,
+        original_lang_score=ls,
+        perplexity=ppl,
+        known_lang_bases=_KNOWN,
+        expected_langs=_EXPECTED,
+    )
+    strong = _has_strong_garbage_evidence(
+        text,
+        valid_word_ratio=sig["valid_word_ratio"],
+        lang_score=sig["trust_lang_score"],
+        orig_lang_score=ls,
+        gibberish_present=(sig["gibberish"] + sig["weird_wx"]) > 0,
+        garbage_density=sig["garbage_density"],
+        weird_ratio=sig["word_weird"],
+        is_upright_czech=sig["is_upright_czech"],
+    )
+    return strong or _has_shape_garbage_evidence(text)
+
+
+def test_the_disjunction_the_gate_will_evaluate_separates_the_population():
+    """Composition test for the issue #30 second witness, on production vectors.
+
+    `_has_shape_garbage_evidence()` has no call site yet — see the note above it
+    in text_util.py. What will read it is the short-line garbage route, as a
+    second disjunct beside `_has_strong_garbage_evidence()`, once the gate that
+    introduces that condition lands. This pins the composed expression now, on
+    the same signal vectors production computes, so the wiring is a one-line
+    change against a tested condition rather than an untested one.
+
+    Both halves matter and neither is redundant:
+
+      * the strong predicate is False on ALL of these lines, garbage included
+        (test_strong_evidence_is_false_on_the_entire_disputed_population), so
+        the disjunction is carried entirely by the shape witness here;
+      * the shape witness is False on all the vocabulary, so it cannot recover
+        the rule by convicting everything.
+
+    The residue is asserted as part of the contract rather than left out:
+    `edelite` is garbage that neither witness reaches, and pretending otherwise
+    is what a lexicon-free approach would have to do.
+    """
+    garbage = [("oueussd", 850.00, 0.9163, "ces_Latn"), ("sektlll", 850.00, 0.60, "ces_Latn")]
+    for text, ppl, ls, lang in garbage:
+        assert _second_witness(text, ppl, ls, lang), f"{text!r}: garbage must have a second witness"
+
+    for row in VOCABULARY_SHORT:
+        text, ppl, ls, lang, _exp, note = _row_values(row)
+        assert not _second_witness(text, ppl, ls, lang), f"{note}: vocabulary must not"
+
+    for row in NOTATION_SHORT:
+        text, ppl, ls, lang, _exp, note = _row_values(row)
+        assert not _second_witness(text, ppl, ls, lang), f"{note}: notation must not"
+
+    assert not _second_witness("edelite", 850.00, 0.60, "ces_Latn"), (
+        "the phonotactically legal residue is out of reach by construction — issue #30 D14"
+    )

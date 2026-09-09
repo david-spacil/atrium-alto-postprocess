@@ -12,6 +12,7 @@ from classify_TEXT import CSV_HEADER, _fast_track_row, _row_from_dict
 from text_util import (
     CATEG_NOISY_SCORE_MAX,
     LANG_REMAP_ALWAYS,
+    _has_shape_garbage_evidence,
     categorize_line,
     compute_garbage_density,
     compute_quality_score,
@@ -172,9 +173,17 @@ class TestIsDomainNotation:
     def test_vocabulary_is_out_of_scope(self, text):
         """Words, not shapes.
 
-        Separating `malakofauna` from `oueussd` needs a lexicon; no regex does
-        it. Matching these here would be the predicate quietly claiming to solve
-        the harder half of issue #30, so they stay with rule_short_garbage.
+        Matching these here would be the predicate quietly claiming to solve the
+        harder half of issue #30, so they stay with rule_short_garbage.
+
+        The docstring used to justify that with "separating `malakofauna` from
+        `oueussd` needs a lexicon; no regex does it". The conclusion holds, the
+        reason does not: `_has_shape_garbage_evidence()` separates exactly that
+        pair on spelling alone (see TestShapeGarbageWitness). The honest form is
+        that separating `malakofauna` from `edelite` needs a lexicon -- both are
+        legally spelled, and only word knowledge tells them apart. Notation
+        shapes and vocabulary remain different questions either way, which is
+        what this test is actually about.
         """
         assert is_domain_notation(text) is False
 
@@ -568,3 +577,132 @@ class TestCategorizeLineReason:
         qs = CATEG_NOISY_SCORE_MAX + 0.02
         cat, score, reason = categorize_line(qs, "čistý text", 2, 0.4, 200.0, return_reason=True)
         assert cat == "Clear" and reason == "clear_threshold" and score >= CATEG_NOISY_SCORE_MAX
+
+
+class TestShapeGarbageWitness:
+    """`_has_shape_garbage_evidence()` — the issue #30 second witness.
+
+    Ships behind `SHORT_GARBAGE_WITNESS_ENABLE`, which defaults to false, so
+    nothing here describes current pipeline behaviour. These are the tests that
+    make the flag safe to flip, and the ones that record why the predicate is
+    shaped the way it is: three of them exist only to pin a clause that was
+    measured, found to false-positive on real Czech, and dropped.
+    """
+
+    # OCR garbage from the issue #30 thread that the strong-evidence predicate
+    # misses entirely. Each is annotated with the clause that reaches it, so a
+    # future narrowing shows which case it would cost.
+    GARBAGE = [
+        ("oueussd", "vowel run"),
+        ("cuxoaid", "vowel run"),
+        ("IDIDIDIDIDIDUOID", "vowel run"),
+        ("nnnooo", "vowel run"),
+        ("sektlll", "triple character"),
+        ("NINNNIC", "triple character"),
+        ("Tthts I", "initial consonant geminate"),
+        ("rragment", "initial consonant geminate"),
+        ("vansasaasasa", "character variety"),
+    ]
+
+    # Everything the predicate must leave alone: the #30 vocabulary, the
+    # notation `is_domain_notation()` already recovers, Czech and German
+    # toponyms and personal names, and units.
+    VOCABULARY = [
+        "malakofauna",
+        "Equus caballus",
+        "diapozitiv",
+        "Kaaden",
+        "Pinii",
+        "kontext",
+        "Occipitale",
+        "Uniocrassus",
+        "Ossa tarsi",
+        "Canis familiaris",
+        "Phalanx proximalis",
+        "Maxilla+dentes",
+        "radius prox.sin.",
+        "1 ks",
+        "II/C",
+        "I-VIII-c",
+        "KK-XIII",
+        "Lokalisace: MM-III",
+        "Reg.Bez.Aussig.",
+        "12,5 cm",
+        "mm",
+        "Tb.",
+        "dr",
+        "hl",
+        "Aachen",
+        "Hannah",
+        "Otto",
+        "Emma",
+        "Anna",
+        "Praha 6",
+        "Brno",
+    ]
+
+    @pytest.mark.parametrize("text, clause", GARBAGE, ids=[t for t, _ in GARBAGE])
+    def test_thread_garbage_is_witnessed(self, text, clause):
+        assert _has_shape_garbage_evidence(text) is True, f"{text!r} should be reached by the {clause} clause"
+
+    @pytest.mark.parametrize("text", VOCABULARY)
+    def test_real_vocabulary_is_not_witnessed(self, text):
+        assert _has_shape_garbage_evidence(text) is False
+
+    @pytest.mark.parametrize(
+        "text",
+        ["vrstva", "vrstva 3", "vrstvy", "vrstvou", "vrstvami", "ctvrtek", "ctvrt", "zmrzl", "scvrkl"],
+    )
+    def test_consonant_run_czech_is_not_witnessed(self, text):
+        """The clause that was measured and dropped, pinned by its counterexample.
+
+        `_RE_FUSED_CONSONANT_RUN` (5+ consonants) matches every one of these.
+        They are ordinary diacritic-free Czech, and `vrstva` ("layer") is the
+        commonest noun in archaeological field documentation -- `vrstva 3`
+        satisfies every condition of the short-garbage route at production
+        signals, so a witness carrying that clause would send it to Trash.
+
+        Asserted on the regex too, so this reads as "the clause matches and we
+        do not use it" rather than as a coincidence that could quietly stop
+        being true.
+        """
+        import text_util as tu
+
+        assert tu._RE_FUSED_CONSONANT_RUN.search(text), "premise: the dropped clause does match this"
+        assert _has_shape_garbage_evidence(text) is False
+
+    def test_long_compound_is_not_witnessed(self):
+        """detect_fused_words' `len(core) > 14` clause, likewise dropped.
+
+        Length is not evidence of garbage in a compounding language. Both
+        assertions together are the point: the signal fires, and the witness
+        deliberately does not read it.
+        """
+        assert detect_fused_words("Skelettmaterial") == 1
+        assert _has_shape_garbage_evidence("Skelettmaterial") is False
+
+    def test_german_triple_consonant_compound_is_not_witnessed(self):
+        """`Schifffahrt` is a word; the triple-character clause is length-capped.
+
+        Post-1996 German orthography keeps all three consonants at a compound
+        seam, so the raw triple test hits real vocabulary. `sektlll` and
+        `NINNNIC` are 7 letters, well inside the cap.
+        """
+        assert _has_shape_garbage_evidence("Schifffahrt") is False
+
+    @pytest.mark.parametrize("text", ["edelite", "vfetennl k.", "Slaot-o hiezazzt"])
+    def test_phonotactically_legal_residue_stays_out_of_reach(self, text):
+        """The honest boundary of the whole approach, asserted rather than omitted.
+
+        These are garbage by the annotation and legal by their spelling. No
+        character-level test separates them from `malakofauna`; only word
+        knowledge does. Issue #30 D14 is that work, and this test is what stops
+        the predicate being read as a solution to it.
+        """
+        assert _has_shape_garbage_evidence(text) is False
+
+    def test_witness_is_not_read_at_default_config(self):
+        """The flag ships false, so nothing above changes a category yet."""
+        import text_util as tu
+
+        assert tu.SHORT_GARBAGE_WITNESS_ENABLE is False

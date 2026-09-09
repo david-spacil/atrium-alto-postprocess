@@ -149,6 +149,85 @@ def test_parse_overrides_rejects_unknown_constant():
     assert R.parse_overrides(["CATEG_TRASH_SCORE_MAX=0.45"]) == {"CATEG_TRASH_SCORE_MAX": 0.45}
 
 
+# Numeric [TEXT_UTILS] constants deliberately kept OUT of TUNABLE_CONSTANTS,
+# each with the reason. This is an allowlist, not a glob, for the same reason
+# tests/test_pipeline_parity.py keeps UNREACHABLE_RULES: an exception that has
+# to be written down is a decision, while an exception a pattern absorbs is a
+# hole. Adding a numeric constant to text_util.py now forces a choice here.
+_DELIBERATELY_NOT_TUNABLE: dict[str, str] = {
+    "LANG_SCORE_REMAP": "remap CAP, not a threshold — moving it rewrites the recorded lang_score itself",
+    "LANG_SCORE_REMAP_FAR": "same, for non-Latin scripts",
+    "ISOLATED_CHAR_MIN_TOKENS": "defines WHICH lines a rule applies to, not how strictly; issue #30",
+    "ISOLATED_CHAR_RATIO_MAX": "pre-filter shape test, upstream of scoring",
+    "FUSED_VOWEL_RUN_MIN": "regex arity — changing it recompiles a pattern, not a comparison",
+    "REPEATED_DOUBLE_MIN": "same: run length inside a detector",
+    "WX_REPEAT_MIN": "same",
+    "VOWEL_RATIO_HIGH": "detector-internal (detect_gibberish_words), not a routing threshold",
+    "VOWEL_RATIO_LOW": "same",
+    "DIACRITIC_INFER_THRESHOLD": "language inference, upstream of categorisation",
+    "QS_LENGTH_MAX": "normalisation domain for the length term, swept via QS_WEIGHT_LENGTH",
+    "ANCHOR_MIN_WORDS": "rotation-anchor shape test",
+    "ANCHOR_VOWEL_RATIO": "rotation-anchor shape test",
+    "ANCHOR_WORD_LEN": "rotation-anchor shape test",
+    "HEADLINE_MAX_WORDS": "forgiven-headline shape test",
+    "HEADLINE_MAX_DIGITS": "forgiven-headline shape test",
+    # Issue #30. These four steer _has_shape_garbage_evidence(), which is only
+    # read when SHORT_GARBAGE_WITNESS_ENABLE is true -- and it ships false. A
+    # constant that cannot change any outcome sweeps as zero-importance, and
+    # every driver in tools/ reads zero variance as an argument to PRUNE, so
+    # registering them now would manufacture four bogus prune recommendations.
+    # Move them into _THRESHOLD_NAMES (and const_importance_sweep.SEARCH_SPACE,
+    # which raises at import for a tunable with no range) in the SAME commit
+    # that flips the flag on. This entry is the reminder.
+    "SHORT_GARBAGE_WITNESS_MIN_ALPHA": "inert while SHORT_GARBAGE_WITNESS_ENABLE is false — register when it flips",
+    "SHORT_GARBAGE_WITNESS_VARIETY_MIN_ALPHA": "inert while the witness flag is false — register when it flips",
+    "SHORT_GARBAGE_WITNESS_VARIETY_MAX": "inert while the witness flag is false — register when it flips",
+    "SHORT_GARBAGE_WITNESS_TRIPLE_MAX_ALPHA": "inert while the witness flag is false — register when it flips",
+}
+
+
+def _numeric_text_utils_constants() -> set:
+    """Every constant text_util.py reads from [TEXT_UTILS] as a float or int."""
+    import re
+
+    source = (Path(__file__).resolve().parent.parent / "text_util.py").read_text(encoding="utf-8")
+    return set(re.findall(r'_get_(?:float|int)\(\s*"TEXT_UTILS",\s*"([A-Z_0-9]+)"', source))
+
+
+def test_every_numeric_constant_is_tunable_or_documented_as_not():
+    """Close the drift hole in TUNABLE_CONSTANTS, in the direction nothing checked.
+
+    ``_live_default()`` already raises for a name declared here but absent from
+    the production modules. Nothing caught the reverse: a new numeric constant
+    added to ``text_util.py`` and never registered is silently invisible to the
+    importance sweep, ``tools/ab_constant_eval.py``, ``run_ablation_study.py``
+    and ``--override``. It does not fail — it just never gets measured, and the
+    sweep's claim to cover the configuration space quietly stops being true.
+
+    This is the same failure mode that let ``rule_coverage_report.RULES`` drift
+    until it measured 16 of 22 rules, fixed there by
+    ``test_rules_registry_matches_fire_call_sites``. Same shape of guard.
+    """
+    numeric = _numeric_text_utils_constants()
+    tunable = set(R.TUNABLE_CONSTANTS)
+    documented = set(_DELIBERATELY_NOT_TUNABLE)
+
+    unclassified = numeric - tunable - documented
+    assert not unclassified, (
+        "numeric [TEXT_UTILS] constants that are neither tunable nor documented as deliberately not:\n  "
+        + "\n  ".join(sorted(unclassified))
+        + "\n\nAdd each to tools/recategorize_from_csv._THRESHOLD_NAMES (and to "
+        "const_importance_sweep.SEARCH_SPACE, which raises at import for a tunable with no range), "
+        "or to _DELIBERATELY_NOT_TUNABLE above with the reason."
+    )
+
+    stale = documented & tunable
+    assert not stale, f"listed as deliberately-not-tunable but registered as tunable: {sorted(stale)}"
+
+    gone = documented - numeric
+    assert not gone, f"_DELIBERATELY_NOT_TUNABLE names constants text_util.py no longer reads: {sorted(gone)}"
+
+
 # ── B2: QS_GARBAGE_NORM_MAX decoupling ──────────────────────────────────────
 
 

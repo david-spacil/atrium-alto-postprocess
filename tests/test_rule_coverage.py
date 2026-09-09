@@ -343,3 +343,38 @@ def test_rules_registry_matches_fire_call_sites():
         f"  declared but never fired: {sorted(declared - call_sites)}"
     )
     assert len(RULES) == len(declared), "RULES contains duplicates"
+
+
+def test_ablation_rule_lists_are_subsets_of_the_registry():
+    """The ablation drivers must name rules that actually exist.
+
+    ``override_constants({"DISABLED_RULES": frozenset([name])})`` matches by
+    string. A name no ``_fire()`` site produces therefore disables nothing, and
+    the driver reports the resulting zero flips / zero clear-loss as
+    "**PRUNE** (Signal variance ~ 0)" -- an argument to delete a rule that was
+    never switched off.
+
+    That is not hypothetical. Four entries in both lists were still spelled
+    ``penalty_*`` from before those gates were renamed to ``rule_*``, so every
+    ablation report since carried four such rows, and
+    ``rule_coverage_report._PENALTY_RULES`` (which partitioned on the same
+    prefix) had been the empty list the whole time. Neither list was covered by
+    a test -- only ``rule_coverage_report.RULES`` was, by the test above.
+
+    Asserted as a subset rather than as equality: choosing to ablate a subset is
+    a legitimate decision (a cheaper sweep), while naming a rule that does not
+    exist never is.
+    """
+    from greedy_backward_elimination import CANDIDATE_RULES
+    from rule_coverage_report import RULES
+    from run_ablation_study import RULES_TO_ABLATE
+
+    registry = set(RULES)
+    assert set(RULES_TO_ABLATE) <= registry, (
+        f"run_ablation_study.RULES_TO_ABLATE names rules that never fire: {sorted(set(RULES_TO_ABLATE) - registry)}"
+    )
+    assert set(CANDIDATE_RULES) <= registry, (
+        f"greedy_backward_elimination.CANDIDATE_RULES names rules that never fire: "
+        f"{sorted(set(CANDIDATE_RULES) - registry)}"
+    )
+    assert len(RULES_TO_ABLATE) == len(set(RULES_TO_ABLATE)), "RULES_TO_ABLATE contains duplicates"
